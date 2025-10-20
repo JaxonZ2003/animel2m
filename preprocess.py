@@ -396,26 +396,17 @@ def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
     if not fake_root.exists():
         raise ValueError(f"{fake_root} is not a valid directory.")
 
-    inpaint = defaultdict(
-        lambda: {"paths": [], "models": [], "mask_label": set(), "mask_path": None}
+    masks = parse_mask(fake_root, quiet=quiet)
+    infos = parse_info(fake_root, quiet=quiet)
+    inpaint, inpaint_records = parse_inpaint(
+        fake_root, quiet=quiet, masks=masks, infos=infos, parse_record=True
     )
-    t2i = defaultdict(lambda: {"paths": [], "models": []})
-    masks = dict()
-    infos = dict()
-
-    for p in glob.glob(str(fake_root / "*" / "inpainting" / "*" / "*")):
-        pth = Path(p)
-        if not pth.is_file():
-            if not quiet:
-                print(f"Skip {pth}, not a file.")
-            continue
-        parts = pth.parts
-        parts_l = [s.lower() for s in parts]
-        try:
-            i = parts_l.index("inpainting")
-            subset = parts[i - 1]  # 0000
-            id_ = parts[i + 1]  # <id>
-        except ValueError:
-            if not quiet:
-                print(f"Skip {pth}, invalid path structure.")
-            continue
+    t2i, t2i_records = parse_t2i(fake_root, quiet=quiet, infos=infos, parse_record=True)
+    records = inpaint_records + t2i_records
+    return {
+        "inpaint": inpaint,
+        "t2i": t2i,
+        "masks": masks,
+        "infos": infos,
+        "records": records,
+    }
