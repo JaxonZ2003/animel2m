@@ -1,6 +1,7 @@
 import os
+import re
 import glob
-import defaultdict
+from collections import defaultdict, Counter
 import logging
 from PIL import Image, ImageOps
 from pathlib import Path
@@ -59,6 +60,39 @@ def idx_img_from_dir(dir: Path) -> list[Path]:
     return [p for p in files if is_img(p) and p.is_file()]
 
 
+def parse_inpaint(fake_root: Path, quiet: bool = True) -> dict:
+    """
+    Parse the inpainting images from the fake image directory.
+
+    Args:
+        fake_root (Path): The root directory containing fake images.
+    """
+    masks = {}
+
+    for p in glob.glob(str(fake_root / "*" / "mask" / "*" / "*")):
+        pth = Path(p)
+        if not pth.is_file() or not is_img(pth):
+            continue
+        parts = pth.parts
+        parts_l = [s.lower() for s in parts]
+        try:
+            i = parts_l.index("mask")
+            subset = parts[i - 1]  # 0000
+            id_ = parts[i + 1]  # <id>
+            label = pth.stem  # <label> : the object mask label
+        except Exception as e:
+            if not quiet:
+                logging.warning(f"Skip mask {pth}: {e}")
+            continue
+
+        key = (subset, id_)
+        if key not in masks:
+            masks[key] = {"path": pth, "labels": {}}
+        masks[key]["labels"][label] = pth
+
+    return masks
+
+
 def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
     """
     Parse the fake image directory to organize the information.
@@ -82,6 +116,9 @@ def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
         - masks[(subset, idx)]   = { 'path': Path, 'labels': ... }
         - infos[(subset, idx)]   = Path(txt)
     """
+    if not fake_root.exists():
+        raise ValueError(f"{fake_root} is not a valid directory.")
+
     inpaint = defaultdict(
         lambda: {"paths": [], "models": [], "mask_label": set(), "mask_path": None}
     )
