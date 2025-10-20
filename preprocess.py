@@ -61,18 +61,21 @@ def idx_img_from_dir(dir: Path) -> list[Path]:
     return [p for p in files if is_img(p) and p.is_file()]
 
 
-def parse_inpaint(fake_root: Path, quiet: bool = True) -> dict:
+def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
     """
-    Parse the inpainting images from the fake image directory.
+    Parse the mask images from the fake image directory.
+    The expected directory structure is as follows:
     fake_root/
     └─ 0000/
-        └─ inpainting/<id>/(SD|SDXL|FLUX1)_inpainting_<id>_<label>.<img_ext>
+        └─ mask/
+            └─ <id>/
+                └─ <label>.png
 
     Args:
         fake_root (Path): The root directory containing fake images.
 
     Returns:
-        dict: A dictionary mapping (subset, id) to inpainting image information.
+        dict: A dictionary mapping (subset, id) to mask information.
     """
     masks = {}
 
@@ -133,7 +136,8 @@ def parse_info(fake_root: Path, quiet: bool = True) -> dict:
     The expected directory structure is as follows:
     fake_root/
     └─ 0000/
-        └─ image_info/<id>.txt
+        └─ image_info/
+            └─ <id>.txt
 
     Args:
         fake_root (Path): The root directory containing fake images.
@@ -171,6 +175,106 @@ def parse_info(fake_root: Path, quiet: bool = True) -> dict:
             continue
             infos[(subset, id_)] = {"description": "", "objects": []}
     return infos
+
+
+def parse_inpaint(
+    fake_root: Path,
+    quiet: bool = True,
+    masks: dict = None,
+    infos: dict = None,
+    parse_record=True,
+) -> dict:
+    """
+    Parse the inpainting images from the fake image directory.
+    The expected directory structure is as follows:
+    fake_root/
+    └─ 0000/
+        └─ inpainting/
+            └─ <id>/
+                └─ (SD|SDXL|FLUX1)_inpainting_<id>_<label>.png
+
+    Args:
+        fake_root (Path): The root directory containing fake images.
+        quiet (bool, optional): Whether to suppress warnings. Defaults to True.
+        masks (dict, optional): A dictionary of masks parsed from parse_mask(). Defaults to None
+        infos (dict, optional): A dictionary of infos parsed from parse_info(). Defaults to None
+        parse_record (bool, optional): Whether to return the record list summarizing all files for a sample. Defaults to True.
+
+    Returns:
+        dict: A dictionary mapping (subset, id) to inpainting image information.
+
+    """
+    inpaint = defaultdict(
+        lambda: {"paths": [], "models": [], "mask_label": set(), "mask_path": None}
+    )
+    records = []
+
+    re_inp = re.compile(
+        r"(?i)^(SD|SDXL|FLUX1)_inpainting_(?P<id>[^_]+)_(?P<label>[^.]+)\.(?:png|jpg|jpeg|bmp|webp)$"
+    )
+
+    for p in glob.glob(str(fake_root / "*" / "inpainting" / "*" / "*")):
+        pth = Path(p)
+        if not pth.is_file() or not is_img(pth):
+            continue
+
+        parts = pth.parts
+        parts_l = [s.lower() for s in parts]
+        try:
+            i = parts_l.index("inpainting")
+            subset = parts[i - 1]  # 0000
+            id_dir = parts[i + 1]  # <id>
+        except Exception as e:
+            if not quiet:
+                logging.warning(f"Skip inpaint {pth}: {e}")
+            continue
+
+        m = re_inp.match(pth.name)
+        if not m:
+            if not quiet:
+                logging.warning(f"Filename not matched (inpainting): {pth.name}")
+            continue
+
+        model = m.group(1).upper()
+        id_from_name = m.group("id")
+        label = m.group("label")
+
+        if id_from_name != id_dir and not quiet:
+            logging.warning(
+                f"ID mismatch in inpainting file: dir={id_dir}, name={id_from_name} in {pth}"
+            )
+
+        key = (subset, id_dir)
+        inpaint[key]["paths"].append(pth)
+        inpaint[key]["models"].append(model)
+        inpaint[key]["mask_label"].add(label)
+
+        mask_path = None
+        if masks and key in masks and label in masks[key]["labels"]:
+            mask_path = masks[key]["labels"][label]
+            inpaint[key]["mask_path"] = mask_path
+
+        if infos:
+            info_path = infos.get(key, None)
+
+        if parse_record:
+            records.append(
+                {
+                    "subset": subset,
+                    "id": id_dir,
+                    "task": "inpainting",
+                    "model": model,
+                    "inpaint_path": pth,
+                    "mask_label": label,
+                    "mask_path": mask_path,
+                    "info": info_path,
+                }
+            )
+
+    if parse_record:
+        return inpaint, records
+
+    return inpaint
 
 
 def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
