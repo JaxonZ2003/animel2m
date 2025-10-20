@@ -76,6 +76,7 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
 
     Returns:
         dict: A dictionary mapping (subset, id) to mask information.
+        - masks[(subset, id)] = { 'path': Path, 'labels': { <label>: Path, ... } }
     """
     masks = {}
 
@@ -144,6 +145,7 @@ def parse_info(fake_root: Path, quiet: bool = True) -> dict:
 
     Returns:
         dict: A dictionary mapping (subset, id) to the parsed info dictionary.
+        - infos[(subset, id)] = { 'description': str, 'objects': [str, ...] }
     """
     infos = {}
     for p in glob.glob(str(fake_root / "*" / "image_info" / "*")):
@@ -202,6 +204,10 @@ def parse_inpaint(
 
     Returns:
         dict: A dictionary mapping (subset, id) to inpainting image information.
+        - inpaint[(subset, idx)] = { 'paths': [Path...], 'models': [SD/SDXL/FLUX1...], 'mask_label': set(...), 'mask_path': Path|None }
+
+        if parse_record is True, also returns:
+        - records: A list of dictionaries summarizing each inpainting image file.
 
     """
     inpaint = defaultdict(
@@ -275,6 +281,93 @@ def parse_inpaint(
         return inpaint, records
 
     return inpaint
+
+
+def parse_t2i(
+    fake_root: Path, quiet: bool = True, infos=None, parse_record=True
+) -> dict:
+    """
+    Parse the text-to-image images from the fake image directory.
+
+    The expected directory structure is as follows:
+    fake_root/
+    └─ 0000/
+        └─ text2image/
+            └─ <id>/
+                └─ (SD|SDXL|FLUX1)_text2image_<id>.png
+
+    Args:
+        fake_root (Path): The root directory containing fake images.
+        quiet (bool, optional): Whether to suppress warnings. Defaults to True.
+        infos (dict, optional): A dictionary of infos parsed from parse_info(). Defaults to None
+        parse_record (bool, optional): Whether to return the record list summarizing all files for
+        a sample. Defaults to True.
+
+    Returns:
+        dict: A dictionary mapping (subset, id) to text-to-image information.
+        - t2i[(subset, idx)]     = { 'paths': [Path...], 'models': [SD/SDXL/FLUX1...] }
+        if parse_record is True, also returns:
+        - records: A list of dictionaries summarizing each text-to-image file.
+    """
+    t2i = defaultdict(lambda: {"paths": [], "models": []})
+    records = []
+
+    re_t2i = re.compile(
+        r"(?i)^(SD|SDXL|FLUX1)_text2image_(?P<id>[^_.]+)\.(?:png|jpg|jpeg|bmp|webp)$"
+    )
+
+    for p in glob.glob(str(fake_root / "*" / "text2image" / "*" / "*")):
+        pth = Path(p)
+        if not pth.is_file() or not is_img(pth):
+            continue
+
+        parts = pth.parts
+        parts_l = [s.lower() for s in parts]
+        try:
+            i = parts_l.index("text2image")
+            subset = parts[i - 1]  # 0000
+            id_dir = parts[i + 1]  # <id>
+        except Exception as e:
+            if not quiet:
+                logging.warning(f"Skip t2i {pth}: {e}")
+            continue
+
+        m = re_t2i.match(pth.name)
+        if not m:
+            if not quiet:
+                logging.warning(f"Filename not matched (text2image): {pth.name}")
+            continue
+
+        model = m.group(1).upper()
+        id_from_name = m.group("id")
+
+        if id_from_name != id_dir and not quiet:
+            logging.warning(
+                f"ID mismatch in text2image file: dir={id_dir}, name={id_from_name} in {pth}"
+            )
+
+        key = (subset, id_dir)
+        t2i[key]["paths"].append(pth)
+        t2i[key]["models"].append(model)
+
+        info_path = infos.get(key, None) if infos else None
+        records.append(
+            {
+                "subset": subset,
+                "id": id_dir,
+                "task": "text2image",
+                "model": model,
+                "img_path": pth,
+                "mask_label": None,
+                "mask_path": None,
+                "info": info_path,
+            }
+        )
+
+    if parse_record:
+        return t2i, records
+
+    return t2i
 
 
 def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
