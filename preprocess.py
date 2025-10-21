@@ -113,9 +113,9 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
             )
 
         key = (subset, id_dir)
-        if key not in masks:
+        if key not in masks:  # new hosting entry
             masks[key] = {"path": pth, "labels": {}}
-        masks[key]["labels"][label] = pth
+        masks[key]["labels"][label] = pth  # one entry can have multiple labels & masks
 
     return masks
 
@@ -272,6 +272,8 @@ def parse_inpaint(
         inpaint[key]["mask_label"].add(label)
 
         mask_path = None
+
+        # append the label-specific mask path if available
         if masks and key in masks and label in masks[key]["labels"]:
             mask_path = masks[key]["labels"][label]
             inpaint[key]["mask_path"] = mask_path
