@@ -304,7 +304,7 @@ def parse_inpaint(
                     "id": id_dir,
                     "task": "inpainting",
                     "model": model,
-                    "inpaint_path": pth,
+                    "img_path": pth,
                     "mask_label": label,
                     "mask_path": mask_path,
                     "info": info_path,
