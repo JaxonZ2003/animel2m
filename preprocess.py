@@ -69,7 +69,7 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
     └─ 0000/
         └─ mask/
             └─ <id>/
-                └─ <label>.png
+                └─ mask_<id>_<label>.png
 
     Args:
         fake_root (Path): The root directory containing fake images.
@@ -79,6 +79,9 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
         - masks[(subset, id)] = { 'path': Path, 'labels': { <label>: Path, ... } }
     """
     masks = {}
+    re_name = re.compile(
+        r"(?i)^mask_(?P<fid>[^_]+)_(?P<label>[^.]+)\.(?:png|jpg|jpeg|bmp|webp)$"
+    )
 
     for p in glob.glob(str(fake_root / "*" / "mask" / "*" / "*")):
         pth = Path(p)
@@ -89,14 +92,27 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
         try:
             i = parts_l.index("mask")
             subset = parts[i - 1]  # 0000
-            id_ = parts[i + 1]  # <id>
-            label = pth.stem  # <label> : the object mask label
+            id_dir = parts[i + 1]  # <id>
         except Exception as e:
             if not quiet:
                 logging.warning(f"Skip mask {pth}: {e}")
             continue
+        m = re_name.match(pth.name)
+        if not m:
+            if not quiet:
+                logging.warning(f"Filename not matched (mask): {pth.name}")
+            id_from_name = id_dir
+            label = pth.stem
+        else:
+            id_from_name = m.group("fid")
+            label = m.group("label")
 
-        key = (subset, id_)
+        if id_from_name != id_dir and not quiet:
+            logging.warning(
+                f"ID mismatch in mask file: dir={id_dir}, name={id_from_name} in {pth}"
+            )
+
+        key = (subset, id_dir)
         if key not in masks:
             masks[key] = {"path": pth, "labels": {}}
         masks[key]["labels"][label] = pth
@@ -379,7 +395,7 @@ def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
     ├─ 0000/
     │   ├─ inpainting/<id>/(SD|SDXL|FLUX1)_inpainting_<id>_<label>.png
     │   ├─ text2image/<id>/(SD|SDXL|FLUX1)_text2image_<id>.png
-    │   ├─ mask/<id>/<label>.png
+    │   ├─ mask/<id>/mask_<id>_<label>.png
     │   └─ image_info/<id>.txt
     └─ 0010/...
 
