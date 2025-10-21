@@ -82,6 +82,7 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
     re_name = re.compile(
         r"(?i)^mask_(?P<fid>[^_]+)_(?P<label>[^.]+)\.(?:png|jpg|jpeg|bmp|webp)$"
     )
+    re_simple = re.compile(r"(?i)^(?P<label>[^.]+)\.(?:png|jpg|jpeg|bmp|webp)$")
 
     for p in glob.glob(str(fake_root / "*" / "mask" / "*" / "*")):
         pth = Path(p)
@@ -98,14 +99,19 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
                 logging.warning(f"Skip mask {pth}: {e}")
             continue
         m = re_name.match(pth.name)
-        if not m:
-            if not quiet:
-                logging.warning(f"Filename not matched (mask): {pth.name}")
-            id_from_name = id_dir
-            label = pth.stem
-        else:
+
+        if m:
             id_from_name = m.group("fid")
             label = m.group("label")
+        else:
+            m2 = re_simple.match(pth.name)
+            if m2:
+                label = m2.group("label")
+                id_from_name = id_dir
+            else:
+                if not quiet:
+                    logging.warning(f"Filename not matched (mask simple): {pth.name}")
+                continue
 
         if id_from_name != id_dir and not quiet:
             logging.warning(
@@ -115,6 +121,10 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
         key = (subset, id_dir)
         if key not in masks:  # new hosting entry
             masks[key] = {"path": pth, "labels": {}}
+
+        if label in masks[key]["labels"]:
+            continue  # already have this label
+
         masks[key]["labels"][label] = pth  # one entry can have multiple labels & masks
 
     return masks
