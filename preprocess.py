@@ -70,6 +70,8 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
         └─ mask/
             └─ <id>/
                 └─ mask_<id>_<label>.png
+                └─ <label>.png  (alternative simpler naming)
+                └─ mask_<label>.png  (alternative simpler naming)
 
     Args:
         fake_root (Path): The root directory containing fake images.
@@ -98,20 +100,24 @@ def parse_mask(fake_root: Path, quiet: bool = True) -> dict:
             if not quiet:
                 logging.warning(f"Skip mask {pth}: {e}")
             continue
-        m = re_name.match(pth.name)
 
-        if m:
-            id_from_name = m.group("fid")
-            label = m.group("label")
-        else:
-            m2 = re_simple.match(pth.name)
-            if m2:
-                label = m2.group("label")
-                id_from_name = id_dir
+        stem = pth.stem  # remove extension
+        name_lower = pth.name.lower()
+
+        if name_lower.startswith("mask_"):
+            rest = stem[5:]  # remove 'mask_'
+            id_prefix = f"{id_dir}_"
+            if rest.startswith(id_prefix):
+                # mask_<id>_<label>.png
+                label = rest[len(id_prefix) :]
             else:
-                if not quiet:
-                    logging.warning(f"Filename not matched (mask simple): {pth.name}")
-                continue
+                # mask_<label>.png
+                label = rest
+            id_from_name = id_dir
+        else:
+            # simpler naming: <label>.png
+            label = stem
+            id_from_name = id_dir
 
         if id_from_name != id_dir and not quiet:
             logging.warning(
