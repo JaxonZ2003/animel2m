@@ -427,6 +427,9 @@ def parse_fake_path(fake_root: Path, quiet: bool = True) -> dict:
         - masks[(subset, idx)]   = { 'path': Path, 'labels': ... }
         - infos[(subset, idx)]   = Path(txt)
     """
+    if type(fake_root) is str:
+        fake_root = Path(fake_root)
+
     if not fake_root.exists():
         raise ValueError(f"{fake_root} is not a valid directory.")
 
