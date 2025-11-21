@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dataset import FakeImageDataset, RealImageDataset
 from models.AniXplore.AniXplore import AniXplore
+from models.Baselines.baselines import *
 from preprocess import parse_fake_path
 
 
