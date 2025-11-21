@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from preprocess import is_img
 
 from preprocess import parse_fake_path
-from baseline_models import get_baseline_model
+from models.Baselines.baselines import get_baseline_model
 
 
 MODEL_TO_ID = {"SD": 0, "SDXL": 1, "FLUX1": 2, "REAL": 3}
