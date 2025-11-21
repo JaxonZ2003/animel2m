@@ -76,15 +76,14 @@ def main():
     # 每个 dict 至少包含: img_path, mask_path, task, model, subset, id, mask_label
     # 这里我放一个占位, 你要替换成你自己的加载方式
 
-    # 2.1 假图：用我们刚写的 load_fake_records(fake_root)
     records_fakes = load_fake_records(fake_root)
     fake_dataset = FakeImageDataset(records_fakes, img_size=img_size, with_mask=True)
-
-    # 2.2 真图
     real_dataset = RealImageDataset(real_root, img_size=img_size)
-
-    # 2.3 合并
     train_dataset = ConcatDataset([fake_dataset, real_dataset])
+
+    print(f"Fake dataset size: {len(fake_dataset)}", flush=True)
+    print(f"Real dataset size: {len(real_dataset)}", flush=True)
+    print(f"Total training dataset size: {len(train_dataset)}", flush=True)
 
     train_loader = DataLoader(
         train_dataset,
@@ -106,39 +105,39 @@ def main():
 
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 
-    num_epochs = 10
+    # num_epochs = 10
 
-    for epoch in range(num_epochs):
-        model.train()
-        running_loss = 0.0
+    # for epoch in range(num_epochs):
+    #     model.train()
+    #     running_loss = 0.0
 
-        for step, batch in enumerate(train_loader):
-            images = batch["image"].to(device)
-            masks = batch["mask"].to(device)
-            labels = batch["label"].to(device)
+    #     for step, batch in enumerate(train_loader):
+    #         images = batch["image"].to(device)
+    #         masks = batch["mask"].to(device)
+    #         labels = batch["label"].to(device)
 
-            out = model(images, masks, labels)
-            loss = out["backward_loss"]
+    #         out = model(images, masks, labels)
+    #         loss = out["backward_loss"]
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+    #         optimizer.zero_grad()
+    #         loss.backward()
+    #         optimizer.step()
 
-            running_loss += loss.item()
+    #         running_loss += loss.item()
 
-            if (step + 1) % 20 == 0:
-                avg_loss = running_loss / 20
-                running_loss = 0.0
-                pred_label = out["pred_label"].detach()
-                acc = (pred_label == labels).float().mean().item()
-                print(
-                    f"Epoch [{epoch+1}/{num_epochs}] "
-                    f"Step [{step+1}] "
-                    f"Loss: {avg_loss:.4f} "
-                    f"Cls Acc: {acc:.4f}"
-                )
+    #         if (step + 1) % 20 == 0:
+    #             avg_loss = running_loss / 20
+    #             running_loss = 0.0
+    #             pred_label = out["pred_label"].detach()
+    #             acc = (pred_label == labels).float().mean().item()
+    #             print(
+    #                 f"Epoch [{epoch+1}/{num_epochs}] "
+    #                 f"Step [{step+1}] "
+    #                 f"Loss: {avg_loss:.4f} "
+    #                 f"Cls Acc: {acc:.4f}"
+    #             )
 
-        torch.save(model.state_dict(), f"anixplore_epoch_{epoch+1}.pth")
+    #     torch.save(model.state_dict(), f"anixplore_epoch_{epoch+1}.pth")
 
 
 if __name__ == "__main__":
