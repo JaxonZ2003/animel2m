@@ -525,4 +525,9 @@ def simple_collate_fn(samples):
         "subset": [s["subset"] for s in samples],
         "id": [s["id"] for s in samples],
     }
+
+    # === Pass masks if present (for AniXplore) ===
+    if "mask" in samples[0] and samples[0]["mask"] is not None:
+        batch["mask"] = torch.stack([s["mask"] for s in samples], dim=0)
+
     return batch
