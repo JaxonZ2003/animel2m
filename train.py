@@ -68,8 +68,12 @@ def main():
     # 2. 准备数据集 (假 + 真)
     # ------------------------------
     img_size = 512  # 要和 AniXplore 里的 image_size 对上
-    real_root = Path("/home/yz2483/scratch.gerstein/real_images/resized_img")
-    fake_root = Path("/home/yz2483/scratch.gerstein/fake_images")
+    real_root = Path(
+        "/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img"
+    )
+    fake_root = Path(
+        "/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/fake_images"
+    )
 
     # 2.1 假图记录 records: 一般是你预处理好的一堆 dict 列表
     # 这里假设你已经有 records_fakes: List[dict]
