@@ -5,13 +5,31 @@ import argparse
 
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.loggers import CSVLogger
 from sklearn.metrics import roc_auc_score, accuracy_score
 
 from models.Baselines.baselines import *
 from dataset import *
 from models.AniXplore.AniXplore import AniXplore
+
+
+class PrintEpochResultCallback(Callback):
+    def on_train_epoch_end(self, trainer, pl_module):
+        # 获取当前 Epoch 的 metrics
+        metrics = trainer.callback_metrics
+        epoch = trainer.current_epoch
+
+        # 格式化打印 (从 metrics 中取值，如果取不到则显示 0.0000)
+        train_loss = metrics.get("train_loss", 0.0)
+        val_loss = metrics.get("val_loss", 0.0)
+        val_acc = metrics.get("val_acc", 0.0)
+        val_auc = metrics.get("val_auc", 0.0)
+
+        print(
+            f"Epoch {epoch} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}",
+            flush=True,
+        )
 
 
 class BaseLitModule(pl.LightningModule):
@@ -41,14 +59,14 @@ class BaseLitModule(pl.LightningModule):
             auc = 0.5  # 防止只有一个类别报错
 
         # 打印和记录 (logger=True 会写入 CSV)
-        self.log(f"{stage}_loss", avg_loss, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"{stage}_acc", acc, on_epoch=True, prog_bar=True, logger=True)
-        self.log(f"{stage}_auc", auc, on_epoch=True, prog_bar=True, logger=True)
+        self.log(f"{stage}_loss", avg_loss, on_epoch=True, prog_bar=False, logger=True)
+        self.log(f"{stage}_acc", acc, on_epoch=True, prog_bar=False, logger=True)
+        self.log(f"{stage}_auc", auc, on_epoch=True, prog_bar=False, logger=True)
 
         # 显式打印到控制台
-        print(
-            f"\n[{stage.upper()} Epoch End] Loss: {avg_loss:.4f} | Acc: {acc:.4f} | AUC: {auc:.4f}"
-        )
+        # print(
+        #     f"\n[{stage.upper()} Epoch End] Loss: {avg_loss:.4f} | Acc: {acc:.4f} | AUC: {auc:.4f}"
+        # )
 
 
 class BaselineLitModule(BaseLitModule):
@@ -68,7 +86,12 @@ class BaselineLitModule(BaseLitModule):
         output = self.model(batch["image"], label=batch["label"])
         loss = output["backward_loss"]
         self.log(
-            "train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
         )
         return loss
 
@@ -134,7 +157,12 @@ class AniXploreLitModule(BaseLitModule):
         output = self.model(batch["image"], masks, batch["label"])
         loss = output["backward_loss"]
         self.log(
-            "train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            logger=True,
         )
         return loss
 
@@ -203,6 +231,8 @@ if __name__ == "__main__":
 
     pl.seed_everything(42)
 
+    print_callbacks = PrintEpochResultCallback()
+
     # === 1. 配置输出路径和 Log 名称 ===
     # 确定当前任务的名称 (用于文件夹命名)
     if args.mode == "baseline":
@@ -258,7 +288,8 @@ if __name__ == "__main__":
         precision="16-mixed",
         # === 启用 Checkpoint 和 Logger ===
         enable_checkpointing=True,  # 必须为 True
-        callbacks=[checkpoint_callback],
+        enable_progress_bar=False,  # 关闭默认进度条
+        callbacks=[checkpoint_callback, print_callbacks],
         logger=logger,  # 传入 Logger
         # ==============================
         num_sanity_val_steps=0,
