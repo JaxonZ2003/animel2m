@@ -177,12 +177,15 @@ class SimpleFakeDataset(Dataset):
         img = Image.open(record["img_path"]).convert("RGB")
         img = self.transform(img)
 
+        model_name = record.get("model", "unknown")
+        model_id = MODEL_TO_ID.get(model_name, -1)
+
         return {
             "image": img,
             "label": 1.0,  # Fake = 1
             "fake": 1,
             "task": record.get("task", "unknown"),
-            "model_id": record.get("model", 0),
+            "model_id": model_id,
             "subset": record.get("subset", "unknown"),
             "id": record.get("id", idx),
         }
@@ -258,7 +261,7 @@ class SimpleRealDataset(Dataset):
             "label": 0.0,  # Real = 0
             "fake": 0,
             "task": "real",
-            "model_id": -1,
+            "model_id": MODEL_TO_ID["REAL"],
             "subset": "real",
             "id": str(img_path.stem),
         }
