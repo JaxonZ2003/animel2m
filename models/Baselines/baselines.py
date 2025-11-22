@@ -51,7 +51,7 @@ class ConvNeXtBaseline(BaselineModel):
     Uses pretrained ConvNeXt-Tiny as backbone.
     """
 
-    def __init__(self, pretrained=True, num_classes=1):
+    def __init__(self, pretrained=True, num_classes=1, **kwargs):
         super().__init__()
         self.backbone = timm.create_model(
             "convnext_tiny", pretrained=pretrained, num_classes=0
@@ -81,7 +81,7 @@ class ResNetBaseline(BaselineModel):
     ResNet50-based classifier, a classic baseline for image classification.
     """
 
-    def __init__(self, pretrained=True, num_classes=1):
+    def __init__(self, pretrained=True, num_classes=1, **kwargs):
         super().__init__()
         self.backbone = models.resnet50(pretrained=pretrained)
         # Replace the final FC layer
@@ -108,7 +108,7 @@ class ViTBaseline(BaselineModel):
     Vision Transformer baseline for comparison with CNN-based approaches.
     """
 
-    def __init__(self, pretrained=True, num_classes=1, img_size=512):
+    def __init__(self, pretrained=True, num_classes=1, img_size=512, **kwargs):
         super().__init__()
         # Use ViT-Small for efficiency
         self.backbone = timm.create_model(
@@ -144,7 +144,9 @@ class FrequencyAwareBaseline(BaselineModel):
     Simpler than AniXplore as it doesn't do mask prediction or dual-stream fusion.
     """
 
-    def __init__(self, backbone="convnext_tiny", pretrained=True, num_classes=1):
+    def __init__(
+        self, backbone="convnext_tiny", pretrained=True, num_classes=1, **kwargs
+    ):
         super().__init__()
         from models.AniXplore.dct_extractor import DctFrequencyExtractor
         from models.AniXplore.dwt_extractor import DwtFrequencyExtractor
@@ -215,7 +217,7 @@ class EfficientNetBaseline(BaselineModel):
     EfficientNet-B0 baseline, known for good accuracy-efficiency trade-off.
     """
 
-    def __init__(self, pretrained=True, num_classes=1):
+    def __init__(self, pretrained=True, num_classes=1, **kwargs):
         super().__init__()
         self.backbone = timm.create_model(
             "efficientnet_b0", pretrained=pretrained, num_classes=0
@@ -247,7 +249,9 @@ class DualStreamBaseline(BaselineModel):
     then fusing for classification. No mask prediction.
     """
 
-    def __init__(self, backbone="convnext_tiny", pretrained=True, num_classes=1):
+    def __init__(
+        self, backbone="convnext_tiny", pretrained=True, num_classes=1, **kwargs
+    ):
         super().__init__()
         from models.AniXplore.dct_extractor import DctFrequencyExtractor
         from models.AniXplore.dwt_extractor import DwtFrequencyExtractor
@@ -303,7 +307,7 @@ class LightweightCNNBaseline(BaselineModel):
     Much smaller than other models.
     """
 
-    def __init__(self, num_classes=1):
+    def __init__(self, num_classes=1, **kwargs):
         super().__init__()
         self.features = nn.Sequential(
             # Block 1

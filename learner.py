@@ -54,6 +54,12 @@ class PrintEpochResultCallback(Callback):
 class BaseLitModule(pl.LightningModule):
     """父类，提取公共的 Metric 计算和 Logging 逻辑"""
 
+    def __init__(self):
+        super().__init__()
+        self.training_step_outputs = []
+        self.validation_step_outputs = []
+        self.test_step_outputs = []
+
     def _compute_and_log_metrics(self, outputs, stage="val"):
         if not outputs:
             return
@@ -100,12 +106,11 @@ class BaseLitModule(pl.LightningModule):
 
 
 class BaselineLitModule(BaseLitModule):
-    def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10):
+    def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10, img_size=512):
         super().__init__()
         self.save_hyperparameters()
         self.hparams.is_logits = True  # 标记这是一个输出 logits 的模型
-        self.model = get_baseline_model(model_name, pretrained=True)
-
+        self.model = get_baseline_model(model_name, pretrained=True, img_size=img_size)
         self.validation_step_outputs = []
         self.test_step_outputs = []
 
@@ -164,11 +169,13 @@ class BaselineLitModule(BaseLitModule):
 
 
 class AniXploreLitModule(BaseLitModule):
-    def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10):
+    def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=512):
         super().__init__()
         self.save_hyperparameters()
         self.hparams.is_logits = False  # AniXplore 输出的是处理过的 0/1
-        self.model = AniXplore(seg_pretrain_path=seg_pretrain_path, conv_pretrain=True)
+        self.model = AniXplore(
+            seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, img_size=img_size
+        )
 
         self.validation_step_outputs = []
         self.test_step_outputs = []
@@ -231,6 +238,7 @@ class AniXploreLitModule(BaseLitModule):
 
 
 if __name__ == "__main__":
+    IMG_SIZE = 224
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode", type=str, default="baseline", choices=["baseline", "anixplore"]
@@ -295,7 +303,7 @@ if __name__ == "__main__":
     dm = FakeDetectionDataModule(
         fake_root=args.fake_root,
         real_root=args.real_root,
-        img_size=224,
+        img_size=IMG_SIZE,
         batch_size=args.batch_size,
         num_workers=4,
     )
@@ -303,11 +311,13 @@ if __name__ == "__main__":
     # 3. Model
     if args.mode == "baseline":
         print(f"Initializing Baseline: {args.model_name}")
-        model = BaselineLitModule(model_name=args.model_name, max_epochs=args.epochs)
+        model = BaselineLitModule(
+            model_name=args.model_name, max_epochs=args.epochs, img_size=IMG_SIZE
+        )
     else:
         print(f"Initializing AniXplore")
         model = AniXploreLitModule(
-            seg_pretrain_path=args.seg_path, max_epochs=args.epochs
+            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, img_size=IMG_SIZE
         )
 
     # 4. Trainer
