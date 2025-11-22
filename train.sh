@@ -6,8 +6,8 @@
 #SBATCH --mem=48G
 #SBATCH -t 12:00:00
 #SBATCH --array=0-3
-#SBATCH -o logs/%x_%A_%a.out
-#SBATCH -e logs/%x_%A_%a.err
+#SBATCH -o /gpfs/milgram/scratch60/gerstein/yz2483/logs/animel2m/%x_%A_%a.out
+#SBATCH -e /gpfs/milgram/scratch60/gerstein/yz2483/logs/animel2m/%x_%A_%a.err
 
 set -eo pipefail
 
@@ -30,7 +30,7 @@ FAKE_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/fake_images"
 REAL_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img"        # 修改为你的实际 real_data 路径
 SEG_PATH="./segformer_mit-b0.pth"        # 修改为你的 SegFormer 权重路径
 BATCH_SIZE=16
-EPOCHS=5
+EPOCHS=20
 
 # === 3. 任务分配逻辑 ===
 # Array ID: 0 -> AniXplore
@@ -52,13 +52,13 @@ elif [ $AID -eq 1 ]; then
 
 elif [ $AID -eq 2 ]; then
     MODE="baseline"
-    MODEL_NAME="resnet"
-    echo "[Task $AID] Running Baseline: ResNet"
+    MODEL_NAME="frequency"
+    echo "[Task $AID] Running Baseline: FrequencyAwareBaseline"
 
 elif [ $AID -eq 3 ]; then
     MODE="baseline"
-    MODEL_NAME="vit"
-    echo "[Task $AID] Running Baseline: ViT"
+    MODEL_NAME="efficientnet"
+    echo "[Task $AID] Running Baseline: EfficientNetBaseline"
 else
     echo "Error: Array ID $AID out of range (0-3)"
     exit 1
