@@ -7,22 +7,25 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.loggers import CSVLogger
-from sklearn.metrics import auc, roc_auc_score, accuracy_score
+from sklearn.metrics import roc_auc_score, accuracy_score
 
-from models.Baselines.baselines import *
-from dataset import *
+# 确保路径正确，根据你的实际情况调整
+from models.Baselines.baselines import get_baseline_model
+from dataset import FakeDetectionDataModule
 from models.AniXplore.AniXplore import AniXplore
 
 
+# === 1. 自定义打印回调 (支持 Train/Val/Test) ===
 class PrintEpochResultCallback(Callback):
-    """在每个 Epoch 结束时打印 Train 和 Val 的所有指标"""
+    """在每个 Epoch 结束时打印 Train 和 Val 的所有指标，测试结束时打印 Test 指标"""
 
     def on_train_epoch_end(self, trainer, pl_module):
-        # 从 trainer.callback_metrics 中获取所有 logged 的指标
+        # 从 trainer.callback_metrics 中获取指标
         metrics = trainer.callback_metrics
         epoch = trainer.current_epoch
 
-        # 使用 .get() 获取，如果取不到（比如第一个 epoch 还没算完）则默认 0.0
+        # 使用 .get() 获取，如果取不到则显示 0.0000
+        # 注意：.item() 用于将 tensor 转换为 python float，打印更干净
         train_loss = metrics.get("train_loss", 0.0)
         train_acc = metrics.get("train_acc", 0.0)
         train_auc = metrics.get("train_auc", 0.0)
@@ -30,6 +33,20 @@ class PrintEpochResultCallback(Callback):
         val_loss = metrics.get("val_loss", 0.0)
         val_acc = metrics.get("val_acc", 0.0)
         val_auc = metrics.get("val_auc", 0.0)
+
+        # 如果是 Tensor，转为 float
+        if isinstance(train_loss, torch.Tensor):
+            train_loss = train_loss.item()
+        if isinstance(train_acc, torch.Tensor):
+            train_acc = train_acc.item()
+        if isinstance(train_auc, torch.Tensor):
+            train_auc = train_auc.item()
+        if isinstance(val_loss, torch.Tensor):
+            val_loss = val_loss.item()
+        if isinstance(val_acc, torch.Tensor):
+            val_acc = val_acc.item()
+        if isinstance(val_auc, torch.Tensor):
+            val_auc = val_auc.item()
 
         print(
             f"Epoch {epoch} | "
@@ -41,9 +58,17 @@ class PrintEpochResultCallback(Callback):
     def on_test_epoch_end(self, trainer, pl_module):
         """测试结束时打印 Test 指标"""
         metrics = trainer.callback_metrics
+
         test_loss = metrics.get("test_loss", 0.0)
         test_acc = metrics.get("test_acc", 0.0)
         test_auc = metrics.get("test_auc", 0.0)
+
+        if isinstance(test_loss, torch.Tensor):
+            test_loss = test_loss.item()
+        if isinstance(test_acc, torch.Tensor):
+            test_acc = test_acc.item()
+        if isinstance(test_auc, torch.Tensor):
+            test_auc = test_auc.item()
 
         print(
             f"\n[TEST RESULT] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUC: {test_auc:.4f}\n",
@@ -51,11 +76,13 @@ class PrintEpochResultCallback(Callback):
         )
 
 
+# === 2. Base Module (核心逻辑：计算并 Log 指标) ===
 class BaseLitModule(pl.LightningModule):
     """父类，提取公共的 Metric 计算和 Logging 逻辑"""
 
     def __init__(self):
         super().__init__()
+        # 初始化存储列表
         self.training_step_outputs = []
         self.validation_step_outputs = []
         self.test_step_outputs = []
@@ -65,21 +92,19 @@ class BaseLitModule(pl.LightningModule):
             return
 
         # 拼接所有 step 的结果
+        # 注意：转为 numpy 进行 sklearn 计算，防止显存溢出
         preds = torch.cat([x["preds"] for x in outputs]).cpu().numpy()
         labels = torch.cat([x["labels"] for x in outputs]).cpu().numpy()
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
 
-        # 计算 Loss 平均值
-        avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
-
         # 计算 ACC
-        # 注意：AniXplore 输出的是 0/1 float，Baseline 输出的是 logits
+        # Baseline 输出的是 logits (sigmoid 后是 probs)，AniXplore 输出的是 0/1 float
         if self.hparams.is_logits:
-            pred_binary = preds > 0.5
+            pred_binary = (preds > 0.5).astype(int)
         else:
-            pred_binary = preds
+            pred_binary = preds.astype(int)
 
-        acc = accuracy_score(labels, pred_binary)
+        acc = accuracy_score(labels.astype(int), pred_binary)
 
         # 计算 AUC
         try:
@@ -87,10 +112,12 @@ class BaseLitModule(pl.LightningModule):
         except ValueError:
             auc = 0.5  # 防止只有一个类别报错
 
-        # 打印和记录 (logger=True 会写入 CSV)
-        self.log(f"{stage}_loss", avg_loss, on_epoch=True, prog_bar=False, logger=True)
-        self.log(f"{stage}_acc", acc, on_epoch=True, prog_bar=False, logger=True)
-        self.log(f"{stage}_auc", auc, on_epoch=True, prog_bar=False, logger=True)
+        # === 打印和记录 (logger=True 会写入 CSV) ===
+        # 注意：这里不要加 on_epoch=True，因为这个函数本身就是在 epoch 结束调用的
+        # 加了 on_epoch=True 可能会导致 key 变成 train_loss_epoch
+        self.log(f"{stage}_loss", avg_loss, prog_bar=False, logger=True)
+        self.log(f"{stage}_acc", acc, prog_bar=False, logger=True)
+        self.log(f"{stage}_auc", auc, prog_bar=False, logger=True)
 
     def on_train_epoch_end(self):
         self._compute_and_log_metrics(self.training_step_outputs, stage="train")
@@ -105,15 +132,14 @@ class BaseLitModule(pl.LightningModule):
         self.test_step_outputs.clear()
 
 
+# === 3. Baseline Model 实现 ===
 class BaselineLitModule(BaseLitModule):
-    def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10, img_size=512):
-        super().__init__()
+    def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10, img_size=224):
+        super().__init__()  # 必须调用父类 init
         self.save_hyperparameters()
-        self.hparams.is_logits = True  # 标记这是一个输出 logits 的模型
+        self.hparams.is_logits = True
+        # 传入 img_size 修复 ViT 等模型报错
         self.model = get_baseline_model(model_name, pretrained=True, img_size=img_size)
-        # self.training_step_outputs = []
-        # self.validation_step_outputs = []
-        # self.test_step_outputs = []
 
     def forward(self, x):
         return self.model.get_logits(x)
@@ -125,6 +151,7 @@ class BaselineLitModule(BaseLitModule):
 
         preds = torch.sigmoid(logits).squeeze()
 
+        # 收集数据用于 Epoch 计算，必须 detach 避免显存爆炸
         self.training_step_outputs.append(
             {
                 "preds": preds.detach().cpu(),
@@ -132,47 +159,33 @@ class BaselineLitModule(BaseLitModule):
                 "loss": loss.detach().cpu(),
             }
         )
-        # self.log(
-        #     "train_loss",
-        #     loss,
-        #     on_step=False,
-        #     on_epoch=True,
-        #     prog_bar=False,
-        #     logger=True,
-        # )
         return loss
 
     def validation_step(self, batch, batch_idx):
         logits = self.forward(batch["image"])
         loss_dict = self.model(batch["image"], label=batch["label"])
         preds = torch.sigmoid(logits).squeeze()
+
         self.validation_step_outputs.append(
             {
-                "preds": preds,
-                "labels": batch["label"],
-                "loss": loss_dict["backward_loss"],
+                "preds": preds.cpu(),
+                "labels": batch["label"].cpu(),
+                "loss": loss_dict["backward_loss"].cpu(),
             }
         )
-
-    def on_validation_epoch_end(self):
-        self._compute_and_log_metrics(self.validation_step_outputs, stage="val")
-        self.validation_step_outputs.clear()
 
     def test_step(self, batch, batch_idx):
         logits = self.forward(batch["image"])
         loss_dict = self.model(batch["image"], label=batch["label"])
         preds = torch.sigmoid(logits).squeeze()
+
         self.test_step_outputs.append(
             {
-                "preds": preds,
-                "labels": batch["label"],
-                "loss": loss_dict["backward_loss"],
+                "preds": preds.cpu(),
+                "labels": batch["label"].cpu(),
+                "loss": loss_dict["backward_loss"].cpu(),
             }
         )
-
-    def on_test_epoch_end(self):
-        self._compute_and_log_metrics(self.test_step_outputs, stage="test")
-        self.test_step_outputs.clear()
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self.hparams.lr)
@@ -180,18 +193,16 @@ class BaselineLitModule(BaseLitModule):
         return [optimizer], [scheduler]
 
 
+# === 4. AniXplore Model 实现 ===
 class AniXploreLitModule(BaseLitModule):
-    def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=512):
-        super().__init__()
+    def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=224):
+        super().__init__()  # 必须调用父类 init
         self.save_hyperparameters()
-        self.hparams.is_logits = False  # AniXplore 输出的是处理过的 0/1
+        self.hparams.is_logits = False
+        # 传入 image_size 修复尺寸不匹配问题
         self.model = AniXplore(
             seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, image_size=img_size
         )
-
-        # self.training_step_outputs = []
-        # self.validation_step_outputs = []
-        # self.test_step_outputs = []
 
     def _get_dummy_mask(self, images):
         return torch.zeros(
@@ -206,6 +217,7 @@ class AniXploreLitModule(BaseLitModule):
         )
         output = self.model(batch["image"], masks, batch["label"])
         loss = output["backward_loss"]
+
         self.training_step_outputs.append(
             {
                 "preds": output["pred_label"].detach().cpu(),
@@ -218,37 +230,32 @@ class AniXploreLitModule(BaseLitModule):
     def validation_step(self, batch, batch_idx):
         masks = self._get_dummy_mask(batch["image"])
         output = self.model(batch["image"], masks, batch["label"])
+
         self.validation_step_outputs.append(
             {
-                "preds": output["pred_label"],
-                "labels": batch["label"],
-                "loss": output["backward_loss"],
+                "preds": output["pred_label"].cpu(),
+                "labels": batch["label"].cpu(),
+                "loss": output["backward_loss"].cpu(),
             }
         )
-
-    def on_validation_epoch_end(self):
-        self._compute_and_log_metrics(self.validation_step_outputs, stage="val")
-        self.validation_step_outputs.clear()
 
     def test_step(self, batch, batch_idx):
         masks = self._get_dummy_mask(batch["image"])
         output = self.model(batch["image"], masks, batch["label"])
+
         self.test_step_outputs.append(
             {
-                "preds": output["pred_label"],
-                "labels": batch["label"],
-                "loss": output["backward_loss"],
+                "preds": output["pred_label"].cpu(),
+                "labels": batch["label"].cpu(),
+                "loss": output["backward_loss"].cpu(),
             }
         )
-
-    def on_test_epoch_end(self):
-        self._compute_and_log_metrics(self.test_step_outputs, stage="test")
-        self.test_step_outputs.clear()
 
     def configure_optimizers(self):
         return AdamW(self.parameters(), lr=self.hparams.lr)
 
 
+# === 5. Main Execution ===
 if __name__ == "__main__":
     IMG_SIZE = 224
     parser = argparse.ArgumentParser()
@@ -284,7 +291,6 @@ if __name__ == "__main__":
     print_callbacks = PrintEpochResultCallback()
 
     # === 1. 配置输出路径和 Log 名称 ===
-    # 确定当前任务的名称 (用于文件夹命名)
     if args.mode == "baseline":
         run_name = args.model_name
     else:
@@ -292,24 +298,19 @@ if __name__ == "__main__":
 
     print(f"=== Task Name: {run_name} ===")
 
-    # Checkpoint 回调: 保存 val_auc 最高的模型
+    # Checkpoint 回调
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(
-            "out", "checkpoint", run_name
-        ),  # 路径: out/checkpoint/convnext/
-        filename="{epoch}-{val_auc:.4f}",  # 文件名: epoch=x-val_auc=0.xxxx.ckpt
-        monitor="val_auc",  # 监控指标
-        mode="max",  # 越大越好
-        save_top_k=1,  # 只保存最好的1个
-        save_last=True,  # 同时也保存最后一个epoch的结果
-        verbose=True,
+        dirpath=os.path.join("out", "checkpoint", run_name),
+        filename="{epoch}-{val_auc:.4f}",
+        monitor="val_auc",
+        mode="max",
+        save_top_k=1,
+        save_last=True,
+        verbose=False,
     )
 
-    # Logger: 保存 loss/acc/auc 到 CSV 文件
-    # 最终文件位置: out/logs/<run_name>/version_0/metrics.csv
+    # Logger: 保存 csv
     logger = CSVLogger(save_dir="out", name="logs", version=run_name)
-
-    # ==============================
 
     # 2. Data
     dm = FakeDetectionDataModule(
@@ -338,21 +339,19 @@ if __name__ == "__main__":
         devices=1,
         max_epochs=args.epochs,
         precision="16-mixed",
-        # === 启用 Checkpoint 和 Logger ===
-        enable_checkpointing=True,  # 必须为 True
-        enable_progress_bar=False,  # 关闭默认进度条
+        enable_checkpointing=True,
+        enable_progress_bar=False,
         callbacks=[checkpoint_callback, print_callbacks],
-        logger=logger,  # 传入 Logger
-        # ==============================
+        logger=logger,
         num_sanity_val_steps=0,
     )
 
-    # 5. Train & Test
+    # 5. Train
     print(f"=== Start Training ===")
     trainer.fit(model, datamodule=dm)
 
     print(f"Best Checkpoint Path: {checkpoint_callback.best_model_path}")
 
+    # 6. Test
     print("\n=== Start Testing (using best checkpoint) ===")
-    # test 会自动加载最好的 checkpoint (ckpt_path='best')
     trainer.test(model, datamodule=dm, ckpt_path="best")
