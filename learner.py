@@ -111,23 +111,35 @@ class BaselineLitModule(BaseLitModule):
         self.save_hyperparameters()
         self.hparams.is_logits = True  # 标记这是一个输出 logits 的模型
         self.model = get_baseline_model(model_name, pretrained=True, img_size=img_size)
-        self.validation_step_outputs = []
-        self.test_step_outputs = []
+        # self.training_step_outputs = []
+        # self.validation_step_outputs = []
+        # self.test_step_outputs = []
 
     def forward(self, x):
         return self.model.get_logits(x)
 
     def training_step(self, batch, batch_idx):
-        output = self.model(batch["image"], label=batch["label"])
-        loss = output["backward_loss"]
-        self.log(
-            "train_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            logger=True,
+        logits = self.forward(batch["image"])
+        loss_dict = self.model(batch["image"], label=batch["label"])
+        loss = loss_dict["backward_loss"]
+
+        preds = torch.sigmoid(logits).squeeze()
+
+        self.training_step_outputs.append(
+            {
+                "preds": preds.detach().cpu(),
+                "labels": batch["label"].detach().cpu(),
+                "loss": loss.detach().cpu(),
+            }
         )
+        # self.log(
+        #     "train_loss",
+        #     loss,
+        #     on_step=False,
+        #     on_epoch=True,
+        #     prog_bar=False,
+        #     logger=True,
+        # )
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -174,11 +186,12 @@ class AniXploreLitModule(BaseLitModule):
         self.save_hyperparameters()
         self.hparams.is_logits = False  # AniXplore 输出的是处理过的 0/1
         self.model = AniXplore(
-            seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, img_size=img_size
+            seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, image_size=img_size
         )
 
-        self.validation_step_outputs = []
-        self.test_step_outputs = []
+        # self.training_step_outputs = []
+        # self.validation_step_outputs = []
+        # self.test_step_outputs = []
 
     def _get_dummy_mask(self, images):
         return torch.zeros(
@@ -193,13 +206,12 @@ class AniXploreLitModule(BaseLitModule):
         )
         output = self.model(batch["image"], masks, batch["label"])
         loss = output["backward_loss"]
-        self.log(
-            "train_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            logger=True,
+        self.training_step_outputs.append(
+            {
+                "preds": output["pred_label"].detach().cpu(),
+                "labels": batch["label"].detach().cpu(),
+                "loss": loss.detach().cpu(),
+            }
         )
         return loss
 
@@ -317,7 +329,7 @@ if __name__ == "__main__":
     else:
         print(f"Initializing AniXplore")
         model = AniXploreLitModule(
-            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, img_size=IMG_SIZE
+            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, image_size=IMG_SIZE
         )
 
     # 4. Trainer
