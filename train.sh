@@ -21,7 +21,6 @@ cd /gpfs/milgram/home/yz2483/animel2m
 pwd
 
 # 确保日志文件夹存在
-mkdir -p logs
 mkdir -p out/checkpoint
 mkdir -p out/logs
 
