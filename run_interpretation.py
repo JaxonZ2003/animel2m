@@ -43,7 +43,7 @@ def run_interpretation(model_name=None, **kwargs):
     params.update(kwargs)
 
     # Build command
-    cmd = ["python", "interpret_models.py"]
+    cmd = ["python", "interpretation.py"]
 
     for key, value in params.items():
         if value is not None:
