@@ -329,7 +329,7 @@ if __name__ == "__main__":
     else:
         print(f"Initializing AniXplore")
         model = AniXploreLitModule(
-            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, image_size=IMG_SIZE
+            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, img_size=IMG_SIZE
         )
 
     # 4. Trainer
