@@ -7,7 +7,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.loggers import CSVLogger
-from sklearn.metrics import roc_auc_score, accuracy_score
+from sklearn.metrics import auc, roc_auc_score, accuracy_score
 
 from models.Baselines.baselines import *
 from dataset import *
@@ -15,19 +15,38 @@ from models.AniXplore.AniXplore import AniXplore
 
 
 class PrintEpochResultCallback(Callback):
+    """在每个 Epoch 结束时打印 Train 和 Val 的所有指标"""
+
     def on_train_epoch_end(self, trainer, pl_module):
-        # 获取当前 Epoch 的 metrics
+        # 从 trainer.callback_metrics 中获取所有 logged 的指标
         metrics = trainer.callback_metrics
         epoch = trainer.current_epoch
 
-        # 格式化打印 (从 metrics 中取值，如果取不到则显示 0.0000)
+        # 使用 .get() 获取，如果取不到（比如第一个 epoch 还没算完）则默认 0.0
         train_loss = metrics.get("train_loss", 0.0)
+        train_acc = metrics.get("train_acc", 0.0)
+        train_auc = metrics.get("train_auc", 0.0)
+
         val_loss = metrics.get("val_loss", 0.0)
         val_acc = metrics.get("val_acc", 0.0)
         val_auc = metrics.get("val_auc", 0.0)
 
         print(
-            f"Epoch {epoch} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}",
+            f"Epoch {epoch} | "
+            f"Train [L:{train_loss:.4f} Acc:{train_acc:.4f} AUC:{train_auc:.4f}] | "
+            f"Val [L:{val_loss:.4f} Acc:{val_acc:.4f} AUC:{val_auc:.4f}]",
+            flush=True,
+        )
+
+    def on_test_epoch_end(self, trainer, pl_module):
+        """测试结束时打印 Test 指标"""
+        metrics = trainer.callback_metrics
+        test_loss = metrics.get("test_loss", 0.0)
+        test_acc = metrics.get("test_acc", 0.0)
+        test_auc = metrics.get("test_auc", 0.0)
+
+        print(
+            f"\n[TEST RESULT] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUC: {test_auc:.4f}\n",
             flush=True,
         )
 
@@ -36,9 +55,13 @@ class BaseLitModule(pl.LightningModule):
     """父类，提取公共的 Metric 计算和 Logging 逻辑"""
 
     def _compute_and_log_metrics(self, outputs, stage="val"):
-        # outputs 是一个 list of dicts
+        if not outputs:
+            return
+
+        # 拼接所有 step 的结果
         preds = torch.cat([x["preds"] for x in outputs]).cpu().numpy()
         labels = torch.cat([x["labels"] for x in outputs]).cpu().numpy()
+        avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
 
         # 计算 Loss 平均值
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
@@ -63,10 +86,17 @@ class BaseLitModule(pl.LightningModule):
         self.log(f"{stage}_acc", acc, on_epoch=True, prog_bar=False, logger=True)
         self.log(f"{stage}_auc", auc, on_epoch=True, prog_bar=False, logger=True)
 
-        # 显式打印到控制台
-        # print(
-        #     f"\n[{stage.upper()} Epoch End] Loss: {avg_loss:.4f} | Acc: {acc:.4f} | AUC: {auc:.4f}"
-        # )
+    def on_train_epoch_end(self):
+        self._compute_and_log_metrics(self.training_step_outputs, stage="train")
+        self.training_step_outputs.clear()  # 释放内存
+
+    def on_validation_epoch_end(self):
+        self._compute_and_log_metrics(self.validation_step_outputs, stage="val")
+        self.validation_step_outputs.clear()
+
+    def on_test_epoch_end(self):
+        self._compute_and_log_metrics(self.test_step_outputs, stage="test")
+        self.test_step_outputs.clear()
 
 
 class BaselineLitModule(BaseLitModule):
