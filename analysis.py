@@ -62,6 +62,10 @@ def main():
     csv_str = pretty.to_csv(index_label="model")
     print(csv_str)
 
+    output_path = BASE_DIR / "summary_metrics.csv"
+    pretty.to_csv(output_path, index_label="model")
+    print(f"Saved summary csv to: {output_path}")
+
 
 if __name__ == "__main__":
     main()
