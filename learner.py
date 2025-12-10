@@ -97,7 +97,8 @@ class BaseLitModule(pl.LightningModule):
         labels = torch.cat([x["labels"] for x in outputs]).cpu().numpy()
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
 
-        # Baselines output raw logits, AniXplore outputs 0 to 1 float
+        # Baselines output raw logits: we have converted it to probs already
+        # AniXplore outputs class probabilities directly
         if self.hparams.is_logits:
             pred_binary = (preds > 0.5).astype(int)
         else:
@@ -128,7 +129,7 @@ class BaseLitModule(pl.LightningModule):
 
 
 class BaselineLitModule(BaseLitModule):
-    def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10, img_size=224):
+    def __init__(self, model_name="convnext", lr=LR, max_epochs=EPOCHS, img_size=224):
         super().__init__()  # call parent init for metric storage
         self.save_hyperparameters()
         self.hparams.is_logits = True  # baseline models output raw logits
@@ -143,7 +144,7 @@ class BaselineLitModule(BaseLitModule):
         loss_dict = self.model(batch["image"], label=batch["label"])
         loss = loss_dict["backward_loss"]
 
-        preds = torch.sigmoid(logits).squeeze()
+        preds = torch.sigmoid(logits).view(-1)
 
         # for epoch metrics logging
         self.training_step_outputs.append(
@@ -158,7 +159,7 @@ class BaselineLitModule(BaseLitModule):
     def validation_step(self, batch, batch_idx):
         logits = self.forward(batch["image"])
         loss_dict = self.model(batch["image"], label=batch["label"])
-        preds = torch.sigmoid(logits).squeeze()
+        preds = torch.sigmoid(logits).view(-1)
 
         self.validation_step_outputs.append(
             {
@@ -171,7 +172,7 @@ class BaselineLitModule(BaseLitModule):
     def test_step(self, batch, batch_idx):
         logits = self.forward(batch["image"])
         loss_dict = self.model(batch["image"], label=batch["label"])
-        preds = torch.sigmoid(logits).squeeze()
+        preds = torch.sigmoid(logits).view(-1)
 
         self.test_step_outputs.append(
             {
@@ -325,7 +326,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator="auto",
         devices=1,
-        max_epochs=args.epochs,
+        max_epochs=EPOCHS,
         precision="16-mixed",
         enable_checkpointing=True,
         enable_progress_bar=False,

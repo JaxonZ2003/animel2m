@@ -150,7 +150,7 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         self.pin_memory = pin_memory and torch.cuda.is_available()
         self.persistent_workers = persistent_workers and num_workers > 0
         self.with_mask = with_mask
-        if not (0 <= self.fold < 5):
+        if not (0 <= fold < 5):
             raise ValueError(
                 "Fold must be between 0 and 4 for 5-fold cross-validation."
             )
@@ -188,15 +188,8 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         fake_dataset_train = FakeImageDataset(
             records_fakes, img_size=self.img_size, with_mask=self.with_mask
         )
-        fake_dataset_val = FakeImageDataset(
-            records_fakes, img_size=self.img_size, with_mask=self.with_mask
-        )
 
         real_dataset_train = RealImageDataset(
-            self.real_root,
-            img_size=self.img_size,
-        )
-        real_dataset_val = RealImageDataset(
             self.real_root,
             img_size=self.img_size,
         )
