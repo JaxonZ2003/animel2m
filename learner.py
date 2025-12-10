@@ -3,16 +3,21 @@ import pytorch_lightning as pl
 import os
 import argparse
 
-from torch.optim import AdamW
+from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.loggers import CSVLogger
 from sklearn.metrics import roc_auc_score, accuracy_score
 
-# 确保路径正确，根据你的实际情况调整
 from models.Baselines.baselines import get_baseline_model
-from dataset import FakeDetectionDataModule
+from dataset import AnimeIMDLDataModule
 from models.AniXplore.AniXplore import AniXplore
+
+IMG_SIZE = 224
+EPOCHS = 60
+BATCH_SIZE = 32
+LR = 1e-4
+SEED = 4710
 
 
 class PrintEpochResultCallback(Callback):
@@ -122,13 +127,12 @@ class BaseLitModule(pl.LightningModule):
         self.test_step_outputs.clear()
 
 
-# === 3. Baseline Model 实现 ===
 class BaselineLitModule(BaseLitModule):
     def __init__(self, model_name="convnext", lr=1e-4, max_epochs=10, img_size=224):
-        super().__init__()  # 必须调用父类 init
+        super().__init__()  # call parent init for metric storage
         self.save_hyperparameters()
-        self.hparams.is_logits = True
-        # 传入 img_size 修复 ViT 等模型报错
+        self.hparams.is_logits = True  # baseline models output raw logits
+        # pass img_size to fix errors in ViT and other models
         self.model = get_baseline_model(model_name, pretrained=True, img_size=img_size)
 
     def forward(self, x):
@@ -141,7 +145,7 @@ class BaselineLitModule(BaseLitModule):
 
         preds = torch.sigmoid(logits).squeeze()
 
-        # 收集数据用于 Epoch 计算，必须 detach 避免显存爆炸
+        # for epoch metrics logging
         self.training_step_outputs.append(
             {
                 "preds": preds.detach().cpu(),
@@ -178,23 +182,22 @@ class BaselineLitModule(BaseLitModule):
         )
 
     def configure_optimizers(self):
-        optimizer = AdamW(self.parameters(), lr=self.hparams.lr)
+        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
         scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.max_epochs)
         return [optimizer], [scheduler]
 
 
-# === 4. AniXplore Model 实现 ===
 class AniXploreLitModule(BaseLitModule):
     def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=224):
-        super().__init__()  # 必须调用父类 init
+        super().__init__()
         self.save_hyperparameters()
         self.hparams.is_logits = False
-        # 传入 image_size 修复尺寸不匹配问题
         self.model = AniXplore(
             seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, image_size=img_size
         )
 
     def _get_dummy_mask(self, images):
+        # if the data has no masks, create dummy masks of all zeros running the AniXplore model
         return torch.zeros(
             (images.shape[0], 1, images.shape[2], images.shape[3]), device=self.device
         )
@@ -242,12 +245,12 @@ class AniXploreLitModule(BaseLitModule):
         )
 
     def configure_optimizers(self):
-        return AdamW(self.parameters(), lr=self.hparams.lr)
+        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.max_epochs)
+        return [optimizer], [scheduler]
 
 
-# === 5. Main Execution ===
 if __name__ == "__main__":
-    IMG_SIZE = 224
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode", type=str, default="baseline", choices=["baseline", "anixplore"]
@@ -255,8 +258,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name", type=str, default="convnext", help="For baseline mode only"
     )
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument(
         "--fake_root",
         type=str,
@@ -268,6 +269,12 @@ if __name__ == "__main__":
         default="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img",
     )
     parser.add_argument(
+        "--fold",
+        type=int,
+        default=0,
+        help="Fold index for cross-validation (0-4)",
+    )
+    parser.add_argument(
         "--seg_path",
         type=str,
         default="./segformer_mit-b0.pth",
@@ -276,19 +283,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    pl.seed_everything(42)
+    run_name = args.model_name if args.mode == "baseline" else "anixplore"
+    print(f"=== Task Name: {run_name} ===", flush=True)
+
+    pl.seed_everything(SEED)
 
     print_callbacks = PrintEpochResultCallback()
 
-    # === 1. 配置输出路径和 Log 名称 ===
-    if args.mode == "baseline":
-        run_name = args.model_name
-    else:
-        run_name = "anixplore"
-
-    print(f"=== Task Name: {run_name} ===")
-
-    # Checkpoint 回调
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join("out", "checkpoint", run_name),
         filename="{epoch}-{val_auc:.4f}",
@@ -298,32 +299,29 @@ if __name__ == "__main__":
         save_last=True,
         verbose=False,
     )
-
-    # Logger: 保存 csv
     logger = CSVLogger(save_dir="out", name="logs", version=run_name)
 
-    # 2. Data
-    dm = FakeDetectionDataModule(
+    dm = AnimeIMDLDataModule(
         fake_root=args.fake_root,
         real_root=args.real_root,
+        fold=args.fold,
         img_size=IMG_SIZE,
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         num_workers=4,
+        train_val_split=0.8,
+        seed=SEED,
     )
 
-    # 3. Model
-    if args.mode == "baseline":
-        print(f"Initializing Baseline: {args.model_name}")
-        model = BaselineLitModule(
-            model_name=args.model_name, max_epochs=args.epochs, img_size=IMG_SIZE
+    model = (
+        BaselineLitModule(
+            model_name=args.model_name, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
         )
-    else:
-        print(f"Initializing AniXplore")
-        model = AniXploreLitModule(
-            seg_pretrain_path=args.seg_path, max_epochs=args.epochs, img_size=IMG_SIZE
+        if args.mode == "baseline"
+        else AniXploreLitModule(
+            seg_pretrain_path=args.seg_path, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
         )
+    )
 
-    # 4. Trainer
     trainer = pl.Trainer(
         accelerator="auto",
         devices=1,
@@ -336,12 +334,19 @@ if __name__ == "__main__":
         num_sanity_val_steps=0,
     )
 
-    # 5. Train
-    print(f"=== Start Training ===")
+    print(
+        f"=== Set up complete ===\n"
+        f"Model {args.model_name} | Max Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Learning Rate: {LR}\n"
+        f"{sum(p.numel() for p in model.parameters() if p.requires_grad)} Trainable Parameters.\n"
+        f"Dataset with fold {args.fold} | Seed {SEED}\n"
+        f"Results will be save to {os.path.join('out', 'logs', run_name)}",
+        flush=True,
+    )
+
+    print(f"=== Start Training ===", flush=True)
     trainer.fit(model, datamodule=dm)
 
-    print(f"Best Checkpoint Path: {checkpoint_callback.best_model_path}")
+    print(f"Best Checkpoint Path: {checkpoint_callback.best_model_path}", flush=True)
 
-    # 6. Test
-    print("\n=== Start Testing (using best checkpoint) ===")
+    print("\n=== Start Testing (using best checkpoint) ===", flush=True)
     trainer.test(model, datamodule=dm, ckpt_path="best")
