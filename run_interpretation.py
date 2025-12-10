@@ -42,8 +42,11 @@ def run_interpretation(model_name=None, **kwargs):
     # Update with provided parameters
     params.update(kwargs)
 
+    interpret_script = "/home/yz2483/animel2m/Interpretation.py"
+    cmd = [sys.executable, interpret_script]
+
     # Build command
-    cmd = ["python", "interpretation.py"]
+    # cmd = ["python", "interpretation.py"]
 
     for key, value in params.items():
         if value is not None:

@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 
 # Import Captum
 from captum.attr import (
-    GradCAM,
+    # GradCAM,
     GuidedGradCam,
     IntegratedGradients,
     LayerGradCam,
@@ -35,7 +35,7 @@ sys.path.append(".")
 from models.Baselines.baselines import get_baseline_model
 from models.AniXplore.AniXplore import AniXplore
 from dataset import SimpleRealDataset, SimpleFakeDataset, parse_fake_path
-from train_baselines import BaselineLitModule, AniXploreLitModule
+from learner import BaselineLitModule, AniXploreLitModule
 
 # For visualization
 from torchvision import transforms
@@ -92,7 +92,7 @@ class ModelInterpreter:
 
         elif self.model_name == "convnext":
             # For ConvNeXt, use the last stage
-            return self.model.model.backbone.stages[-1][-1]
+            return self.model.model.backbone.stages[-1]
 
         elif self.model_name == "resnet":
             # For ResNet, use the last conv layer in layer4
@@ -116,7 +116,7 @@ class ModelInterpreter:
         elif self.model_name == "frequency":
             # For frequency-aware model, use the backbone's last layer
             if hasattr(self.model.model.backbone, "stages"):
-                return self.model.model.backbone.stages[-1][-1]
+                return self.model.model.backbone.stages[-1]
             else:
                 return self.model.model.backbone.layer4[-1]
 
@@ -135,34 +135,54 @@ class ModelInterpreter:
             return None
 
     def forward_func(self, input_tensor):
+        input_tensor = input_tensor.to(self.device)
         """Forward function for Captum"""
+        # if self.model_name == "anixplore":
+        #     # AniXplore needs special handling
+        #     batch_size = input_tensor.shape[0]
+        #     dummy_mask = torch.zeros((batch_size, 1, self.img_size, self.img_size)).to(
+        #         self.device
+        #     )
+        #     dummy_label = torch.ones(batch_size).to(self.device)
+        #     output = self.model.model(input_tensor, dummy_mask, dummy_label)
+        #     # Return raw logits for classification
+        #     return self.model.model.cls_head(
+        #         self.model.model.fusion_layers[-1](
+        #             torch.cat(
+        #                 [
+        #                     self.model.model.convnext.stages[-1](
+        #                         self.model.model.convnext.stem(
+        #                             torch.cat([input_tensor, input_tensor], dim=1)
+        #                         )
+        #                     ),
+        #                     input_tensor,
+        #                 ],
+        #                 dim=1,
+        #             )
+        #         )
+        #     ).squeeze()
+        # else:
+        #     # Baseline models
+        #     return self.model.model.get_logits(input_tensor).squeeze()
+
         if self.model_name == "anixplore":
-            # AniXplore needs special handling
+            # 这里先简单处理：我们暂时不用 AniXplore 做 GradCAM
+            # 为了 SHAP / IG 至少有东西用，先用 backward_loss 近似一个标量输出
             batch_size = input_tensor.shape[0]
-            dummy_mask = torch.zeros((batch_size, 1, self.img_size, self.img_size)).to(
-                self.device
+            dummy_mask = torch.zeros(
+                (batch_size, 1, self.img_size, self.img_size),
+                device=self.device,
             )
-            dummy_label = torch.ones(batch_size).to(self.device)
-            output = self.model.model(input_tensor, dummy_mask, dummy_label)
-            # Return raw logits for classification
-            return self.model.model.cls_head(
-                self.model.model.fusion_layers[-1](
-                    torch.cat(
-                        [
-                            self.model.model.convnext.stages[-1](
-                                self.model.model.convnext.stem(
-                                    torch.cat([input_tensor, input_tensor], dim=1)
-                                )
-                            ),
-                            input_tensor,
-                        ],
-                        dim=1,
-                    )
-                )
-            ).squeeze()
+            dummy_label = torch.zeros(batch_size, device=self.device)
+            output_dict = self.model.model(input_tensor, dummy_mask, dummy_label)
+            # backward_loss 是标量 [B]，我们扩一维成 [B, 1] 让 Captum 好受一点
+            loss = output_dict["backward_loss"]
+            return loss.view(-1, 1)
+
         else:
-            # Baseline models
-            return self.model.model.get_logits(input_tensor).squeeze()
+            # Baseline 模型：保留 logits 的 (B, 1) 形状
+            logits = self.model.model.get_logits(input_tensor)   # [B, 1]
+            return logits
 
     def interpret_gradcam(self, input_tensor, target_class=None):
         """Generate GradCAM interpretation"""
@@ -174,8 +194,9 @@ class ModelInterpreter:
 
         # If no target class specified, use predicted class
         if target_class is None:
-            output = self.forward_func(input_tensor)
-            target_class = int(torch.sigmoid(output) > 0.5)
+            # output = self.forward_func(input_tensor)
+            # target_class = int(torch.sigmoid(output) > 0.5)
+            target_class = 0
 
         # Generate GradCAM attributions
         attributions = self.gradcam.attribute(
@@ -347,58 +368,58 @@ def evaluate_model(
     images_data = []
 
     # Process samples
-    with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(data_loader, desc="Processing samples")):
-            if len(images_data) >= n_samples:
-                break
 
-            # Get first image from batch
-            input_tensor = batch["image"][:1]
-            label = batch["label"][:1].item()
+    for batch_idx, batch in enumerate(tqdm(data_loader, desc="Processing samples")):
+        if len(images_data) >= n_samples:
+            break
 
-            # Get model prediction
-            output = interpreter.forward_func(input_tensor)
-            pred = torch.sigmoid(output).item()
+        # Get first image from batch
+        input_tensor = batch["image"][:1]
+        label = batch["label"][:1].item()
 
-            # Generate interpretations
-            print(f"  Generating GradCAM for sample {len(images_data)+1}...")
-            gradcam_attr = interpreter.interpret_gradcam(input_tensor)
+        # Get model prediction
+        output = interpreter.forward_func(input_tensor)
+        pred = torch.sigmoid(output).item()
 
-            print(f"  Generating SHAP for sample {len(images_data)+1}...")
-            shap_attr = interpreter.interpret_shap(input_tensor, n_samples=25)
+        # Generate interpretations
+        print(f"  Generating GradCAM for sample {len(images_data)+1}...")
+        gradcam_attr = interpreter.interpret_gradcam(input_tensor)
 
-            print(
-                f"  Generating Integrated Gradients for sample {len(images_data)+1}..."
-            )
-            ig_attr = interpreter.interpret_integrated_gradients(input_tensor)
+        print(f"  Generating SHAP for sample {len(images_data)+1}...")
+        shap_attr = interpreter.interpret_shap(input_tensor, n_samples=25)
 
-            # Process for visualization
-            original_img = (
-                denormalize_image(input_tensor[0]).permute(1, 2, 0).cpu().numpy()
-            )
-            gradcam_vis = process_attributions(gradcam_attr, input_tensor)
-            shap_vis = process_attributions(shap_attr, input_tensor)
-            ig_vis = process_attributions(ig_attr, input_tensor)
+        print(
+            f"  Generating Integrated Gradients for sample {len(images_data)+1}..."
+        )
+        ig_attr = interpreter.interpret_integrated_gradients(input_tensor)
 
-            # Apply colormap to SHAP and IG for better visualization
-            if shap_vis is not None:
-                cmap = plt.cm.RdBu_r
-                shap_vis = cmap(shap_vis)
+        # Process for visualization
+        original_img = (
+            denormalize_image(input_tensor[0]).permute(1, 2, 0).cpu().numpy()
+        )
+        gradcam_vis = process_attributions(gradcam_attr, input_tensor)
+        shap_vis = process_attributions(shap_attr, input_tensor)
+        ig_vis = process_attributions(ig_attr, input_tensor)
 
-            if ig_vis is not None:
-                cmap = plt.cm.RdBu_r
-                ig_vis = cmap(ig_vis)
+        # Apply colormap to SHAP and IG for better visualization
+        if shap_vis is not None:
+            cmap = plt.cm.RdBu_r
+            shap_vis = cmap(shap_vis)
 
-            images_data.append(
-                {
-                    "original": original_img,
-                    "gradcam": gradcam_vis,
-                    "shap": shap_vis,
-                    "ig": ig_vis,
-                    "label": int(label),
-                    "pred": pred,
-                }
-            )
+        if ig_vis is not None:
+            cmap = plt.cm.RdBu_r
+            ig_vis = cmap(ig_vis)
+
+        images_data.append(
+            {
+                "original": original_img,
+                "gradcam": gradcam_vis,
+                "shap": shap_vis,
+                "ig": ig_vis,
+                "label": int(label),
+                "pred": pred,
+            }
+        )
 
     # Create visualization
     save_path = Path(save_dir) / f"{model_name}_interpretations.png"
@@ -484,7 +505,7 @@ def main():
     else:
         # Find all models with checkpoints
         models_to_eval = []
-        for model_name in baseline_models + ["anixplore"]:
+        for model_name in baseline_models:
             model_dir = checkpoint_dir / model_name
             if model_dir.exists():
                 # Find best checkpoint (highest val_auc)
