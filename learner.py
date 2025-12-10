@@ -3,9 +3,10 @@ import pytorch_lightning as pl
 import os
 import argparse
 
+from pathlib import Path
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from pytorch_lightning.callbacks import ModelCheckpoint, Callback
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback, EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
 from sklearn.metrics import roc_auc_score, accuracy_score
 
@@ -284,6 +285,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    base_dir = os.path.join("out", f"seed{SEED}_fold{args.fold}")
     run_name = args.model_name if args.mode == "baseline" else "anixplore"
     print(f"=== Task Name: {run_name} ===", flush=True)
 
@@ -292,7 +294,7 @@ if __name__ == "__main__":
     print_callbacks = PrintEpochResultCallback()
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join("out", "checkpoint", run_name),
+        dirpath=os.path.join(base_dir, "checkpoint", run_name),
         filename="{epoch}-{val_auc:.4f}",
         monitor="val_auc",
         mode="max",
@@ -300,11 +302,19 @@ if __name__ == "__main__":
         save_last=True,
         verbose=False,
     )
-    logger = CSVLogger(save_dir="out", name="logs", version=run_name)
+    early_stopping = EarlyStopping(
+        monitor="val_auc",
+        mode="max",
+        patience=10,
+        min_delta=0.001,
+        verbose=True,
+    )
+
+    logger = CSVLogger(save_dir=os.path.join(base_dir, "logs"), name=run_name)
 
     dm = AnimeIMDLDataModule(
         fake_root=args.fake_root,
-        real_root=args.real_root,
+        real_root=Path(args.real_root),
         fold=args.fold,
         img_size=IMG_SIZE,
         batch_size=BATCH_SIZE,
@@ -330,7 +340,7 @@ if __name__ == "__main__":
         precision="16-mixed",
         enable_checkpointing=True,
         enable_progress_bar=False,
-        callbacks=[checkpoint_callback, print_callbacks],
+        callbacks=[checkpoint_callback, print_callbacks, early_stopping],
         logger=logger,
         num_sanity_val_steps=0,
     )
@@ -340,7 +350,7 @@ if __name__ == "__main__":
         f"Model {args.model_name} | Max Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Learning Rate: {LR}\n"
         f"{sum(p.numel() for p in model.parameters() if p.requires_grad)} Trainable Parameters.\n"
         f"Dataset with fold {args.fold} | Seed {SEED}\n"
-        f"Results will be save to {os.path.join('out', 'logs', run_name)}",
+        f"Results will be save to {os.path.join(base_dir, 'logs', run_name)}",
         flush=True,
     )
 
