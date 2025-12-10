@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import logging
-import json
-import wandb  # Optional: for experiment tracking
 import argparse
 import numpy as np
 import pytorch_lightning as pl
@@ -12,18 +10,9 @@ from torch.utils.data import DataLoader, Dataset, ConcatDataset, random_split
 from torchvision import transforms
 from PIL import Image
 from pathlib import Path
-from tqdm import tqdm
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-)
+from sklearn.model_selection import StratifiedKFold
+from preprocess import is_img, parse_fake_path
 
-from preprocess import is_img
-
-from preprocess import parse_fake_path
 from models.Baselines.baselines import get_baseline_model
 
 
@@ -33,17 +22,22 @@ MODEL_TO_ID = {"SD": 0, "SDXL": 1, "FLUX1": 2, "REAL": 3}
 class FakeImageDataset(Dataset):
     """
     This dataset will return repetitive fake images with unique mask labels by default.
-    Please use collapse_for_classification(records) method to avoid having repetitive images
+    Use collapse_for_classification(records) method to avoid having repetitive images
     when training classification models.
     """
 
     def __init__(self, records, img_size=256, with_mask=True):
         self.records = records
+        self.img_size = img_size
         self.with_mask = with_mask
         self.t_img = transforms.Compose(
             [
                 transforms.Resize((img_size, img_size)),
                 transforms.ToTensor(),  # Convert to [0, 1]
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],  # ImageNet stats
+                ),
             ]
         )
         self.t_mask = transforms.Compose(
@@ -68,7 +62,7 @@ class FakeImageDataset(Dataset):
 
         sample = {
             "image": img,  # Tensor of shape (3, H, W)
-            "fake": 1,  # 1 indicates fake image
+            "label": 1,  # 1 indicates fake image
             "task": r["task"],  # "inpainting" or "txt2img"
             "model_name": r["model"],
             "model_id": MODEL_TO_ID[r["model"]],
@@ -98,6 +92,9 @@ class RealImageDataset(Dataset):
             [
                 transforms.Resize((img_size, img_size)),
                 transforms.ToTensor(),  # Convert to [0, 1]
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
             ]
         )
 
@@ -112,7 +109,7 @@ class RealImageDataset(Dataset):
         id_ = p.stem
         return {
             "image": img,
-            "fake": 0,  # 0 indicates real image
+            "label": 0,  # 0 indicates real image
             "task": "real",
             "model_id": MODEL_TO_ID["REAL"],
             "subset": subset,
@@ -124,153 +121,9 @@ class RealImageDataset(Dataset):
         }
 
 
-class SimpleFakeDataset(Dataset):
+class AnimeIMDLDataModule(pl.LightningDataModule):
     """
-    Simplified dataset that only returns images and labels (no masks).
-    For fake images dataset.
-    """
-
-    def __init__(self, records, img_size=512, augment=False):
-        self.records = records
-        self.img_size = img_size
-        self.augment = augment
-
-        # Base transforms
-        self.base_transform = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
-
-        # Augmentation transforms
-        if augment:
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomVerticalFlip(p=0.1),
-                    transforms.RandomRotation(degrees=10),
-                    # transforms.ColorJitter(
-                    #     brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1
-                    # ),
-                    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                ]
-            )
-        else:
-            self.transform = self.base_transform
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, idx):
-        record = self.records[idx]
-
-        # Load image
-        img = Image.open(record["img_path"]).convert("RGB")
-        img = self.transform(img)
-
-        model_name = record.get("model", "unknown")
-        model_id = MODEL_TO_ID.get(model_name, -1)
-
-        return {
-            "image": img,
-            "label": 1.0,  # Fake = 1
-            "fake": 1,
-            "task": record.get("task", "unknown"),
-            "model_id": model_id,
-            "subset": record.get("subset", "unknown"),
-            "id": record.get("id", idx),
-        }
-
-
-class SimpleRealDataset(Dataset):
-    """
-    Simplified dataset that only returns images and labels (no masks).
-    For real images dataset.
-    """
-
-    def __init__(self, real_root, img_size=512, augment=False):
-        self.real_root = Path(real_root)
-        self.img_size = img_size
-        self.augment = augment
-
-        # Get all image paths
-        self.image_paths = (
-            list(self.real_root.glob("*.jpg"))
-            + list(self.real_root.glob("*.png"))
-            + list(self.real_root.glob("*.jpeg"))
-            + list(self.real_root.glob("*.JPEG"))
-            + list(self.real_root.glob("*.JPG"))
-        )
-
-        if not self.image_paths:
-            raise ValueError(f"No images found in {real_root}")
-
-        # Base transforms
-        self.base_transform = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
-
-        # Augmentation transforms
-        if augment:
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize((img_size, img_size)),
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomVerticalFlip(p=0.1),
-                    transforms.RandomRotation(degrees=10),
-                    # transforms.ColorJitter(
-                    #     brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1
-                    # ),
-                    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                ]
-            )
-        else:
-            self.transform = self.base_transform
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-
-        # Load image
-        img = Image.open(img_path).convert("RGB")
-        img = self.transform(img)
-
-        return {
-            "image": img,
-            "label": 0.0,  # Real = 0
-            "fake": 0,
-            "task": "real",
-            "model_id": MODEL_TO_ID["REAL"],
-            "subset": "real",
-            "id": str(img_path.stem),
-        }
-
-
-class FakeDetectionDataModule(pl.LightningDataModule):
-    """
-    PyTorch Lightning DataModule for fake image detection.
-    Handles all data loading logic.
+    Handling both fake and real images using PyTorch Lightning DataModule.
     """
 
     def __init__(
@@ -280,13 +133,12 @@ class FakeDetectionDataModule(pl.LightningDataModule):
         img_size,
         batch_size,
         num_workers,
-        task_filter=None,
         train_val_split=0.8,
-        augment_train=True,
         pin_memory=True,
         persistent_workers=True,
-        max_fake_samples=None,
-        max_real_samples=None,
+        with_mask=False,  # whether to load masks for fake images
+        fold=0,  # only for 5-fold CV
+        seed=4710,
     ):
         super().__init__()
         self.fake_root = fake_root
@@ -294,13 +146,16 @@ class FakeDetectionDataModule(pl.LightningDataModule):
         self.img_size = img_size
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.task_filter = task_filter
         self.train_val_split = train_val_split
-        self.augment_train = augment_train
         self.pin_memory = pin_memory and torch.cuda.is_available()
         self.persistent_workers = persistent_workers and num_workers > 0
-        self.max_fake_samples = max_fake_samples
-        self.max_real_samples = max_real_samples
+        self.with_mask = with_mask
+        if not (0 <= fold < 5):
+            raise ValueError(
+                "Fold must be between 0 and 4 for 5-fold cross-validation."
+            )
+        self.fold = fold
+        self.seed = seed
 
         # Datasets will be created in setup()
         self.train_dataset = None
@@ -308,141 +163,90 @@ class FakeDetectionDataModule(pl.LightningDataModule):
         self.test_dataset = None
 
     def prepare_data(self):
-        """
-        Download data if needed. Called only on 1 GPU/TPU in distributed.
-        """
-        # Check if paths exist
+        # check if paths exist
         if not Path(self.fake_root).exists():
-            raise ValueError(f"Fake root path does not exist: {self.fake_root}")
+            raise FileNotFoundError(f"Fake root path does not exist: {self.fake_root}")
         if not Path(self.real_root).exists():
-            raise ValueError(f"Real root path does not exist: {self.real_root}")
+            raise FileNotFoundError(f"Real root path does not exist: {self.real_root}")
 
     def setup(self, stage=None):
         """
-        Data operations on every GPU/TPU.
-        Split data, apply transforms, etc.
+        split the dataset following 5-fold stratified cross-validation
         """
-        # Parse fake records
+        if (
+            self.train_dataset is not None
+            and self.val_dataset is not None
+            and self.test_dataset is not None
+        ):
+            return  # already set up
+
+        # parse fake records
         parsed = parse_fake_path(self.fake_root, quiet=True)
         records_fakes = parsed["records"]
 
-        # Filter by task if specified
-        if self.task_filter:
-            records_fakes = [r for r in records_fakes if r["task"] == self.task_filter]
-            print(
-                f"Filtered to {len(records_fakes)} fake samples for task: {self.task_filter}"
-            )
-
-        # Limit fake samples if specified
-        if self.max_fake_samples and len(records_fakes) > self.max_fake_samples:
-            records_fakes = records_fakes[: self.max_fake_samples]
-            print(f"Limited to {self.max_fake_samples} fake samples")
-
-        # Create datasets with augmentation for training
-        fake_dataset_train = SimpleFakeDataset(
-            records_fakes, img_size=self.img_size, augment=self.augment_train
-        )
-        fake_dataset_val = SimpleFakeDataset(
-            records_fakes, img_size=self.img_size, augment=False
+        # initiate datasets
+        fake_dataset_train = FakeImageDataset(
+            records_fakes, img_size=self.img_size, with_mask=self.with_mask
         )
 
-        real_dataset_train = SimpleRealDataset(
-            self.real_root, img_size=self.img_size, augment=self.augment_train
-        )
-        real_dataset_val = SimpleRealDataset(
-            self.real_root, img_size=self.img_size, augment=False
+        real_dataset_train = RealImageDataset(
+            self.real_root,
+            img_size=self.img_size,
         )
 
-        # Balance dataset if needed
-        # if self.balance_dataset:
-        #     min_samples = min(len(fake_dataset_train), len(real_dataset_train))
-        #     if self.max_real_samples:
-        #         min_samples = min(min_samples, self.max_real_samples)
+        # [0, num_fake - 1] are fake indices
+        # [num_fake, num_fake + num_real - 1] are real indices
+        full_dataset = ConcatDataset([fake_dataset_train, real_dataset_train])
 
-        #     # Randomly sample to balance
-        #     if len(fake_dataset_train) > min_samples:
-        #         indices = np.random.choice(
-        #             len(fake_dataset_train), min_samples, replace=False
-        #         )
-        #         fake_dataset_train = torch.utils.data.Subset(
-        #             fake_dataset_train, indices
-        #         )
-        #         fake_dataset_val = torch.utils.data.Subset(fake_dataset_val, indices)
+        num_fake = len(fake_dataset_train)
+        num_real = len(real_dataset_train)
 
-        #     if len(real_dataset_train) > min_samples:
-        #         indices = np.random.choice(
-        #             len(real_dataset_train), min_samples, replace=False
-        #         )
-        #         real_dataset_train = torch.utils.data.Subset(
-        #             real_dataset_train, indices
-        #         )
-        #         real_dataset_val = torch.utils.data.Subset(real_dataset_val, indices)
+        labels = np.array([1] * num_fake + [0] * num_real)
+        indices = np.arange(len(full_dataset))
 
-        # Split datasets
-        if stage == "fit" or stage is None:
-            # Training/validation split
-            fake_train_size = int(self.train_val_split * len(fake_dataset_train))
-            fake_val_size = len(fake_dataset_train) - fake_train_size
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.seed)
+        folds = list(skf.split(indices, labels))
 
-            # Use the augmented dataset for training split
-            fake_train_indices = list(range(fake_train_size))
-            fake_val_indices = list(
-                range(fake_train_size, fake_train_size + fake_val_size)
-            )
+        test_fold = self.fold  # fold set for testing
+        val_fold = (self.fold + 1) % 5  # fold + 1 set for validation
 
-            fake_train = torch.utils.data.Subset(fake_dataset_train, fake_train_indices)
-            fake_val = torch.utils.data.Subset(fake_dataset_val, fake_val_indices)
+        _, test_idx = folds[test_fold]
+        _, val_idx = folds[val_fold]
 
-            real_train_size = int(self.train_val_split * len(real_dataset_train))
-            real_val_size = len(real_dataset_train) - real_train_size
+        # the other three folds are for training
+        train_mask = np.ones(len(indices), dtype=bool)
+        train_mask[test_idx] = False
+        train_mask[val_idx] = False
+        train_idx = indices[train_mask]
 
-            real_train_indices = list(range(real_train_size))
-            real_val_indices = list(
-                range(real_train_size, real_train_size + real_val_size)
-            )
+        self.train_dataset = torch.utils.data.Subset(full_dataset, train_idx)
+        self.val_dataset = torch.utils.data.Subset(full_dataset, val_idx)
+        self.test_dataset = torch.utils.data.Subset(full_dataset, test_idx)
 
-            real_train = torch.utils.data.Subset(real_dataset_train, real_train_indices)
-            real_val = torch.utils.data.Subset(real_dataset_val, real_val_indices)
+        num_fake_train = np.sum(train_idx < num_fake)
+        num_real_train = len(train_idx) - num_fake_train
 
-            # Combine datasets
-            self.train_dataset = ConcatDataset([fake_train, real_train])
-            self.val_dataset = ConcatDataset([fake_val, real_val])
+        num_fake_val = np.sum(val_idx < num_fake)
+        num_real_val = len(val_idx) - num_fake_val
 
-            print(
-                f"Training samples: {len(self.train_dataset)} "
-                f"(Fake: {len(fake_train)}, Real: {len(real_train)})"
-            )
-            print(
-                f"Validation samples: {len(self.val_dataset)} "
-                f"(Fake: {len(fake_val)}, Real: {len(real_val)})"
-            )
+        num_fake_test = np.sum(test_idx < num_fake)
+        num_real_test = len(test_idx) - num_fake_test
 
-        if stage == "test" or stage is None:
-            # For testing, use validation set or create a separate test set
-            if self.val_dataset is not None:
-                self.test_dataset = self.val_dataset
-            else:
-                # Create test dataset from all data
-                fake_dataset_test = SimpleFakeDataset(
-                    records_fakes, img_size=self.img_size, augment=False
-                )
-                real_dataset_test = SimpleRealDataset(
-                    self.real_root, img_size=self.img_size, augment=False
-                )
-
-                # Take a subset for testing
-                test_size = min(1000, len(fake_dataset_test), len(real_dataset_test))
-                fake_test = torch.utils.data.Subset(
-                    fake_dataset_test,
-                    np.random.choice(len(fake_dataset_test), test_size, replace=False),
-                )
-                real_test = torch.utils.data.Subset(
-                    real_dataset_test,
-                    np.random.choice(len(real_dataset_test), test_size, replace=False),
-                )
-
-                self.test_dataset = ConcatDataset([fake_test, real_test])
-                print(f"Test samples: {len(self.test_dataset)}")
+        print(
+            f"[Fold {self.fold}] Train samples: {len(self.train_dataset)} "
+            f"(Fake: {num_fake_train}, Real: {num_real_train})",
+            flush=True,
+        )
+        print(
+            f"[Fold {self.fold}] Validation samples: {len(self.val_dataset)} "
+            f"(Fake: {num_fake_val}, Real: {num_real_val})",
+            flush=True,
+        )
+        print(
+            f"[Fold {self.fold}] Test samples: {len(self.test_dataset)} "
+            f"(Fake: {num_fake_test}, Real: {num_real_test})",
+            flush=True,
+        )
 
     def train_dataloader(self):
         """Return training dataloader"""
@@ -481,10 +285,6 @@ class FakeDetectionDataModule(pl.LightningDataModule):
             persistent_workers=False,  # Don't keep workers for test
         )
 
-    def predict_dataloader(self):
-        """Return prediction dataloader (same as test)"""
-        return self.test_dataloader()
-
 
 def collapse_for_classification(records):
     """
@@ -520,7 +320,6 @@ def simple_collate_fn(samples):
     batch = {
         "image": images,
         "label": labels,
-        "fake": torch.tensor([s["fake"] for s in samples], dtype=torch.int64),
         "task": [s["task"] for s in samples],
         "model_id": torch.tensor(
             [s.get("model_id", -1) for s in samples], dtype=torch.int64
