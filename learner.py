@@ -15,17 +15,16 @@ from dataset import FakeDetectionDataModule
 from models.AniXplore.AniXplore import AniXplore
 
 
-# === 1. 自定义打印回调 (支持 Train/Val/Test) ===
 class PrintEpochResultCallback(Callback):
-    """在每个 Epoch 结束时打印 Train 和 Val 的所有指标，测试结束时打印 Test 指标"""
+    r"""
+    Log train and val metrics at the end of each epoch.
+    Log the test metrics at the end of testing.
+    """
 
     def on_train_epoch_end(self, trainer, pl_module):
-        # 从 trainer.callback_metrics 中获取指标
         metrics = trainer.callback_metrics
         epoch = trainer.current_epoch
 
-        # 使用 .get() 获取，如果取不到则显示 0.0000
-        # 注意：.item() 用于将 tensor 转换为 python float，打印更干净
         train_loss = metrics.get("train_loss", 0.0)
         train_acc = metrics.get("train_acc", 0.0)
         train_auc = metrics.get("train_auc", 0.0)
@@ -34,55 +33,52 @@ class PrintEpochResultCallback(Callback):
         val_acc = metrics.get("val_acc", 0.0)
         val_auc = metrics.get("val_auc", 0.0)
 
-        # 如果是 Tensor，转为 float
-        if isinstance(train_loss, torch.Tensor):
-            train_loss = train_loss.item()
-        if isinstance(train_acc, torch.Tensor):
-            train_acc = train_acc.item()
-        if isinstance(train_auc, torch.Tensor):
-            train_auc = train_auc.item()
-        if isinstance(val_loss, torch.Tensor):
-            val_loss = val_loss.item()
-        if isinstance(val_acc, torch.Tensor):
-            val_acc = val_acc.item()
-        if isinstance(val_auc, torch.Tensor):
-            val_auc = val_auc.item()
+        train_loss = (
+            train_loss.item() if isinstance(train_loss, torch.Tensor) else train_loss
+        )
+        train_acc = (
+            train_acc.item() if isinstance(train_acc, torch.Tensor) else train_acc
+        )
+        train_auc = (
+            train_auc.item() if isinstance(train_auc, torch.Tensor) else train_auc
+        )
+        val_loss = val_loss.item() if isinstance(val_loss, torch.Tensor) else val_loss
+        val_acc = val_acc.item() if isinstance(val_acc, torch.Tensor) else val_acc
+        val_auc = val_auc.item() if isinstance(val_auc, torch.Tensor) else val_auc
 
         print(
-            f"Epoch {epoch} | "
-            f"Train [L:{train_loss:.4f} Acc:{train_acc:.4f} AUC:{train_auc:.4f}] | "
-            f"Val [L:{val_loss:.4f} Acc:{val_acc:.4f} AUC:{val_auc:.4f}]",
+            f"[TRAIN] [L:{train_loss:.4f} Acc:{train_acc:.4f} AUC:{train_auc:.4f}] | Epoch {epoch}\n"
+            f"[VALID] [L:{val_loss:.4f} Acc:{val_acc:.4f} AUC:{val_auc:.4f}] | Epoch {epoch}",
             flush=True,
         )
 
     def on_test_epoch_end(self, trainer, pl_module):
-        """测试结束时打印 Test 指标"""
         metrics = trainer.callback_metrics
 
         test_loss = metrics.get("test_loss", 0.0)
         test_acc = metrics.get("test_acc", 0.0)
         test_auc = metrics.get("test_auc", 0.0)
 
-        if isinstance(test_loss, torch.Tensor):
-            test_loss = test_loss.item()
-        if isinstance(test_acc, torch.Tensor):
-            test_acc = test_acc.item()
-        if isinstance(test_auc, torch.Tensor):
-            test_auc = test_auc.item()
+        test_loss = (
+            test_loss.item() if isinstance(test_loss, torch.Tensor) else test_loss
+        )
+        test_acc = test_acc.item() if isinstance(test_acc, torch.Tensor) else test_acc
+        test_auc = test_auc.item() if isinstance(test_auc, torch.Tensor) else test_auc
 
         print(
-            f"\n[TEST RESULT] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUC: {test_auc:.4f}\n",
+            f"\n[TEST ] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUC: {test_auc:.4f}\n",
             flush=True,
         )
 
 
-# === 2. Base Module (核心逻辑：计算并 Log 指标) ===
 class BaseLitModule(pl.LightningModule):
-    """父类，提取公共的 Metric 计算和 Logging 逻辑"""
+    r"""
+    Metrics computation and logging for train/val/test.
+    """
 
     def __init__(self):
         super().__init__()
-        # 初始化存储列表
+        # temporary storage for epoch outputs and logs
         self.training_step_outputs = []
         self.validation_step_outputs = []
         self.test_step_outputs = []
@@ -91,37 +87,31 @@ class BaseLitModule(pl.LightningModule):
         if not outputs:
             return
 
-        # 拼接所有 step 的结果
-        # 注意：转为 numpy 进行 sklearn 计算，防止显存溢出
+        # concatenate all preds and labels
         preds = torch.cat([x["preds"] for x in outputs]).cpu().numpy()
         labels = torch.cat([x["labels"] for x in outputs]).cpu().numpy()
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
 
-        # 计算 ACC
-        # Baseline 输出的是 logits (sigmoid 后是 probs)，AniXplore 输出的是 0/1 float
+        # Baselines output raw logits, AniXplore outputs 0 to 1 float
         if self.hparams.is_logits:
             pred_binary = (preds > 0.5).astype(int)
         else:
             pred_binary = preds.astype(int)
 
+        # compute accuracy
         acc = accuracy_score(labels.astype(int), pred_binary)
 
-        # 计算 AUC
-        try:
-            auc = roc_auc_score(labels, preds)
-        except ValueError:
-            auc = 0.5  # 防止只有一个类别报错
+        # compute AUC
+        auc = roc_auc_score(labels, preds)
 
-        # === 打印和记录 (logger=True 会写入 CSV) ===
-        # 注意：这里不要加 on_epoch=True，因为这个函数本身就是在 epoch 结束调用的
-        # 加了 on_epoch=True 可能会导致 key 变成 train_loss_epoch
+        # log the metrics
         self.log(f"{stage}_loss", avg_loss, prog_bar=False, logger=True)
         self.log(f"{stage}_acc", acc, prog_bar=False, logger=True)
         self.log(f"{stage}_auc", auc, prog_bar=False, logger=True)
 
     def on_train_epoch_end(self):
         self._compute_and_log_metrics(self.training_step_outputs, stage="train")
-        self.training_step_outputs.clear()  # 释放内存
+        self.training_step_outputs.clear()  # free memory
 
     def on_validation_epoch_end(self):
         self._compute_and_log_metrics(self.validation_step_outputs, stage="val")
