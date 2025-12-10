@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from pytorch_lightning.callbacks import ModelCheckpoint, Callback
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback, EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
 from sklearn.metrics import roc_auc_score, accuracy_score
 
@@ -302,6 +302,14 @@ if __name__ == "__main__":
         save_last=True,
         verbose=False,
     )
+    early_stopping = EarlyStopping(
+        monitor="val_auc",
+        mode="max",
+        patience=10,
+        min_delta=0.001,
+        verbose=True,
+    )
+
     logger = CSVLogger(save_dir=os.path.join(base_dir, "logs"), name=run_name)
 
     dm = AnimeIMDLDataModule(
@@ -332,7 +340,7 @@ if __name__ == "__main__":
         precision="16-mixed",
         enable_checkpointing=True,
         enable_progress_bar=False,
-        callbacks=[checkpoint_callback, print_callbacks],
+        callbacks=[checkpoint_callback, print_callbacks, early_stopping],
         logger=logger,
         num_sanity_val_steps=0,
     )
@@ -342,7 +350,7 @@ if __name__ == "__main__":
         f"Model {args.model_name} | Max Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Learning Rate: {LR}\n"
         f"{sum(p.numel() for p in model.parameters() if p.requires_grad)} Trainable Parameters.\n"
         f"Dataset with fold {args.fold} | Seed {SEED}\n"
-        f"Results will be save to {os.path.join('out', 'logs', run_name)}",
+        f"Results will be save to {os.path.join(base_dir, 'logs', run_name)}",
         flush=True,
     )
 
