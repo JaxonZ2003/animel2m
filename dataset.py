@@ -16,7 +16,14 @@ from preprocess import is_img, parse_fake_path
 from models.Baselines.baselines import get_baseline_model
 
 
-MODEL_TO_ID = {"SD": 0, "SDXL": 1, "FLUX1": 2, "REAL": 3}
+MODEL_TO_ID = {
+    "SD": 0,
+    "SDXL": 1,
+    "FLUX1": 2,
+    "REAL": 3,
+    "Flux.1 S": 4,  # for civitai test set only
+    "Illustraious": 5,  # for civitai test set only
+}
 
 
 class FakeImageDataset(Dataset):
@@ -121,6 +128,60 @@ class RealImageDataset(Dataset):
         }
 
 
+class CivitaiFakeDataset(Dataset):
+    """
+    Dataset for Civitai fake images without masks for test set only.
+    """
+
+    def __init__(self, civitai_root: Path, img_size=256):
+        if not civitai_root.exists():
+            print(
+                f"Civitai root path does not exist: {civitai_root}, trying to use the fallback path.",
+                flush=True,
+            )
+            civitai_root = Path(
+                "/home/yz2483/scratch.gerstein/animel2m_dataset/civitai_subset/image"
+            )
+            if not civitai_root.exists():
+                raise FileNotFoundError(
+                    f"Fall back path does not exist: {civitai_root}, please follow the instructions to download the civitai test set."
+                )
+
+        files = [p for p in civitai_root.rglob("*") if p.is_file() and is_img(p)]
+        self.paths = files
+        self.t_img = transforms.Compose(
+            [
+                transforms.Resize((img_size, img_size)),
+                transforms.ToTensor(),  # Convert to [0, 1]
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        p = self.paths[idx]  # civitai_subset/image/<model_name>/<id>.jpeg
+        img = Image.open(p).convert("RGB")
+        img = self.t_img(img)
+        model_name = p.parent.stem
+        id_ = p.stem
+        return {
+            "image": img,
+            "label": 1,  # 1 indicates fake image
+            "task": "civitai_test_fake",
+            "model_id": MODEL_TO_ID[model_name],  # assuming SD for civitai
+            "subset": "civitai",
+            "id": None,
+            "mask": None,
+            "mask_label": None,
+            "info_path": None,
+            "img_path": p,
+        }
+
+
 class AnimeIMDLDataModule(pl.LightningDataModule):
     """
     Handling both fake and real images using PyTorch Lightning DataModule.
@@ -130,6 +191,7 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         self,
         fake_root,
         real_root,
+        civitai_root,
         img_size,
         batch_size,
         num_workers,
@@ -143,6 +205,7 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         super().__init__()
         self.fake_root = fake_root
         self.real_root = real_root
+        self.civitai_root = civitai_root
         self.img_size = img_size
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -168,6 +231,10 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
             raise FileNotFoundError(f"Fake root path does not exist: {self.fake_root}")
         if not Path(self.real_root).exists():
             raise FileNotFoundError(f"Real root path does not exist: {self.real_root}")
+        if not Path(self.civitai_root).exists():
+            raise FileNotFoundError(
+                f"Civitai root path does not exist: {self.civitai_root}"
+            )
 
     def setup(self, stage=None):
         """
@@ -185,21 +252,66 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         records_fakes = parsed["records"]
 
         # initiate datasets
-        fake_dataset_train = FakeImageDataset(
+        fake_dataset = FakeImageDataset(
             records_fakes, img_size=self.img_size, with_mask=self.with_mask
         )
 
-        real_dataset_train = RealImageDataset(
+        real_dataset = RealImageDataset(
             self.real_root,
+            img_size=self.img_size,
+        )
+
+        civitai_dataset = CivitaiFakeDataset(
+            self.civitai_root,
             img_size=self.img_size,
         )
 
         # [0, num_fake - 1] are fake indices
         # [num_fake, num_fake + num_real - 1] are real indices
-        full_dataset = ConcatDataset([fake_dataset_train, real_dataset_train])
+        num_fake_total = len(fake_dataset)
+        num_real_total = len(real_dataset)
+        num_civitai_total = len(civitai_dataset)
 
-        num_fake = len(fake_dataset_train)
-        num_real = len(real_dataset_train)
+        # split 1/3 real images for test set
+        rng = np.random.RandomState(self.seed)
+        desired_real_test = max(1, num_real_total // 3)
+
+        num_real_test = min(
+            desired_real_test, num_civitai_total
+        )  # ensure we don't exceed civitai size
+
+        # choose 1/3 real images or num_civitai_total whichever is smaller for test
+        all_real_indices = np.arange(num_real_total)
+        test_real_indices = rng.choice(
+            all_real_indices, size=num_real_test, replace=False
+        )
+        trainval_real_indices = np.setdiff1d(all_real_indices, test_real_indices)
+
+        # create subsets of real dataset
+        real_trainval_dataset = torch.utils.data.Subset(
+            real_dataset, trainval_real_indices
+        )
+        test_real_dataset = torch.utils.data.Subset(real_dataset, test_real_indices)
+
+        num_real_trainval = len(real_trainval_dataset)
+
+        # choose the same number of fake images from civitai for test set
+        num_civitai_test = num_real_test
+        all_civitai_indices = np.arange(num_civitai_total)
+        test_civitai_indices = rng.choice(
+            all_civitai_indices, size=num_civitai_test, replace=False
+        )
+
+        # create civitai test dataset
+        civitai_test_dataset = torch.utils.data.Subset(
+            civitai_dataset, test_civitai_indices
+        )
+
+        # use the remaining 2/3 real and all fake images for train/val split
+        full_dataset = ConcatDataset([fake_dataset, real_trainval_dataset])
+
+        num_fake = len(fake_dataset)
+        num_real = len(real_trainval_dataset)
 
         labels = np.array([1] * num_fake + [0] * num_real)
         indices = np.arange(len(full_dataset))
@@ -207,21 +319,17 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.seed)
         folds = list(skf.split(indices, labels))
 
-        test_fold = self.fold  # fold set for testing
-        val_fold = (self.fold + 1) % 5  # fold + 1 set for validation
-
-        _, test_idx = folds[test_fold]
+        val_fold = self.fold  # fold set for validation
         _, val_idx = folds[val_fold]
 
-        # the other three folds are for training
+        # the other four folds are for training
         train_mask = np.ones(len(indices), dtype=bool)
-        train_mask[test_idx] = False
         train_mask[val_idx] = False
         train_idx = indices[train_mask]
 
         self.train_dataset = torch.utils.data.Subset(full_dataset, train_idx)
         self.val_dataset = torch.utils.data.Subset(full_dataset, val_idx)
-        self.test_dataset = torch.utils.data.Subset(full_dataset, test_idx)
+        self.test_dataset = ConcatDataset([civitai_test_dataset, test_real_dataset])
 
         num_fake_train = np.sum(train_idx < num_fake)
         num_real_train = len(train_idx) - num_fake_train
@@ -229,8 +337,8 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         num_fake_val = np.sum(val_idx < num_fake)
         num_real_val = len(val_idx) - num_fake_val
 
-        num_fake_test = np.sum(test_idx < num_fake)
-        num_real_test = len(test_idx) - num_fake_test
+        num_fake_test = len(civitai_test_dataset)
+        num_real_test_final = len(test_real_dataset)
 
         print(
             f"[Fold {self.fold}] Train samples: {len(self.train_dataset)} "
@@ -244,7 +352,7 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         )
         print(
             f"[Fold {self.fold}] Test samples: {len(self.test_dataset)} "
-            f"(Fake: {num_fake_test}, Real: {num_real_test})",
+            f"(Fake: {num_fake_test}, Real: {num_real_test_final})",
             flush=True,
         )
 
