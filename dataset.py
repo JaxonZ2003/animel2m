@@ -65,17 +65,20 @@ class FakeImageDataset(Dataset):
         mask = None
         if self.with_mask and r["mask_path"] is not None:
             mask = Image.open(r["mask_path"]).convert("L")
-            mask = self.t_mask(mask)
+            mask = self.t_mask(mask)  # (1, H, W)
+        else:
+            _, H, W = img.shape
+            mask = torch.zeros((1, H, W), dtype=torch.float32)
 
         sample = {
-            "image": img,  # Tensor of shape (3, H, W)
+            "image": img,  #  tensor (3, H, W)
             "label": 1,  # 1 indicates fake image
             "task": r["task"],  # "inpainting" or "txt2img"
             "model_name": r["model"],
             "model_id": MODEL_TO_ID[r["model"]],
             "subset": r["subset"],  # 0000
             "id": r["id"],  # 000000
-            "mask": mask,  # Tensor of shape (1, H, W) or None
+            "mask": mask,  # tensor (1, H, W)
             "mask_label": r["mask_label"],  # objects
         }
         return sample
@@ -95,6 +98,7 @@ class RealImageDataset(Dataset):
 
         files = [p for p in real_root.rglob("*") if p.is_file() and is_img(p)]
         self.paths = files
+        self.img_size = img_size
         self.t_img = transforms.Compose(
             [
                 transforms.Resize((img_size, img_size)),
@@ -114,6 +118,8 @@ class RealImageDataset(Dataset):
         img = self.t_img(img)
         subset = p.parent.stem
         id_ = p.stem
+        _, H, W = img.shape
+        mask = torch.zeros((1, H, W), dtype=torch.float32)  # mask of 0 for real images
         return {
             "image": img,
             "label": 0,  # 0 indicates real image
@@ -121,7 +127,7 @@ class RealImageDataset(Dataset):
             "model_id": MODEL_TO_ID["REAL"],
             "subset": subset,
             "id": id_,
-            "mask": None,
+            "mask": mask,
             "mask_label": None,
             "info_path": None,
             "img_path": p,
@@ -149,6 +155,7 @@ class CivitaiFakeDataset(Dataset):
 
         files = [p for p in civitai_root.rglob("*") if p.is_file() and is_img(p)]
         self.paths = files
+        self.img_size = img_size
         self.t_img = transforms.Compose(
             [
                 transforms.Resize((img_size, img_size)),
@@ -167,7 +174,10 @@ class CivitaiFakeDataset(Dataset):
         img = Image.open(p).convert("RGB")
         img = self.t_img(img)
         model_name = p.parent.stem
-        id_ = p.stem
+        _, H, W = img.shape
+        mask = torch.zeros(
+            (1, H, W), dtype=torch.float32
+        )  # mask of 0 for civitai images
         return {
             "image": img,
             "label": 1,  # 1 indicates fake image
@@ -175,7 +185,7 @@ class CivitaiFakeDataset(Dataset):
             "model_id": MODEL_TO_ID[model_name],  # assuming SD for civitai
             "subset": "civitai",
             "id": None,
-            "mask": None,
+            "mask": mask,
             "mask_label": None,
             "info_path": None,
             "img_path": p,
@@ -198,7 +208,7 @@ class AnimeIMDLDataModule(pl.LightningDataModule):
         train_val_split=0.8,
         pin_memory=True,
         persistent_workers=True,
-        with_mask=False,  # whether to load masks for fake images
+        with_mask=True,  # whether to load masks for fake images
         fold=0,  # only for 5-fold CV
         seed=4710,
     ):
@@ -421,7 +431,6 @@ def collapse_for_classification(records):
 
 
 def simple_collate_fn(samples):
-    """Simple collate function for baseline models (no masks needed)"""
     images = torch.stack([s["image"] for s in samples], dim=0)
     labels = torch.tensor([s["label"] for s in samples], dtype=torch.float32)
 
@@ -436,7 +445,7 @@ def simple_collate_fn(samples):
         "id": [s["id"] for s in samples],
     }
 
-    # === Pass masks if present (for AniXplore) ===
+    # for AniXplore training with masks
     if "mask" in samples[0] and samples[0]["mask"] is not None:
         batch["mask"] = torch.stack([s["mask"] for s in samples], dim=0)
 

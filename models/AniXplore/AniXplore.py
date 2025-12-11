@@ -1005,6 +1005,8 @@ class AniXplore(nn.Module):
             "backward_loss": combined_loss,
             # predicted mask, will calculate for metrics automatically
             "pred_mask": mask_pred,
+            # add a new key for AUC calculation
+            "pred_prob": pred_label_prob_1d,
             # predicted binaray label, will calculate for metrics automatically
             "pred_label": pred_label_binary,
             # ----values below is for visualization----

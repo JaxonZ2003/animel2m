@@ -4,7 +4,7 @@ import os
 import argparse
 
 from pathlib import Path
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
@@ -14,9 +14,9 @@ from models.Baselines.baselines import get_baseline_model
 from dataset import AnimeIMDLDataModule
 from models.AniXplore.AniXplore import AniXplore
 
-IMG_SIZE = 224
-EPOCHS = 60
-BATCH_SIZE = 32
+IMG_SIZE = 512
+EPOCHS = 50
+BATCH_SIZE = 16
 LR = 1e-4
 SEED = 4710
 
@@ -184,7 +184,7 @@ class BaselineLitModule(BaseLitModule):
         )
 
     def configure_optimizers(self):
-        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
+        optimizer = AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=5e-2)
         scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.max_epochs)
         return [optimizer], [scheduler]
 
@@ -193,7 +193,7 @@ class AniXploreLitModule(BaseLitModule):
     def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=224):
         super().__init__()
         self.save_hyperparameters()
-        self.hparams.is_logits = False
+        self.hparams.is_logits = True  # AniXplore outputs class probabilities directly
         self.model = AniXplore(
             seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, image_size=img_size
         )
@@ -215,7 +215,7 @@ class AniXploreLitModule(BaseLitModule):
 
         self.training_step_outputs.append(
             {
-                "preds": output["pred_label"].detach().cpu(),
+                "preds": output["pred_prob"].detach().cpu(),
                 "labels": batch["label"].detach().cpu(),
                 "loss": loss.detach().cpu(),
             }
@@ -228,7 +228,7 @@ class AniXploreLitModule(BaseLitModule):
 
         self.validation_step_outputs.append(
             {
-                "preds": output["pred_label"].cpu(),
+                "preds": output["pred_prob"].cpu(),
                 "labels": batch["label"].cpu(),
                 "loss": output["backward_loss"].cpu(),
             }
@@ -240,14 +240,14 @@ class AniXploreLitModule(BaseLitModule):
 
         self.test_step_outputs.append(
             {
-                "preds": output["pred_label"].cpu(),
+                "preds": output["pred_prob"].cpu(),
                 "labels": batch["label"].cpu(),
                 "loss": output["backward_loss"].cpu(),
             }
         )
 
     def configure_optimizers(self):
-        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
+        optimizer = AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=5e-2)
         scheduler = CosineAnnealingLR(optimizer, T_max=self.hparams.max_epochs)
         return [optimizer], [scheduler]
 
@@ -269,6 +269,11 @@ if __name__ == "__main__":
         "--real_root",
         type=str,
         default="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img",
+    )
+    parser.add_argument(
+        "--civitai_root",
+        type=str,
+        default="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/civitai_subset/image",
     )
     parser.add_argument(
         "--fold",
@@ -315,6 +320,7 @@ if __name__ == "__main__":
     dm = AnimeIMDLDataModule(
         fake_root=args.fake_root,
         real_root=Path(args.real_root),
+        civitai_root=Path(args.civitai_root),
         fold=args.fold,
         img_size=IMG_SIZE,
         batch_size=BATCH_SIZE,
