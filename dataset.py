@@ -251,7 +251,7 @@ class CivitaiFakeDataset(Dataset):
             "image": img,
             "label": 1,  # 1 indicates fake image
             "task": "civitai_test_fake",
-            "model_id": MODEL_TO_ID[model_name],  # assuming SD for civitai
+            "model_id": MODEL_TO_ID.get(model_name, -1),  # assuming SD for civitai
             "subset": "civitai",
             "id": None,
             "mask": mask,
