@@ -569,7 +569,7 @@ def visualize_mask_on_image(model, img_path, device="cuda", save_path="mask_vis.
 
 
 def main():
-    img_path = "/path/to/your/test_image.png"
+    img_path = "/home/yz2483/scratch.gerstein/animel2m_dataset/fake_images/0000/text2image/255000/SD_text2image_255000.png"
 
     generate_all_models_gradcam(
         img_path,
