@@ -1,22 +1,83 @@
-"""
-Model Interpretation Script using Captum (GradCAM and SHAP)
-Evaluates trained models and generates interpretation visualizations
-"""
-
 import torch
+import argparse
+import warnings
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
+
+from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
-import argparse
 from tqdm import tqdm
-import warnings
+from torchvision import transforms
+
+from models.AniXplore.AniXplore import AniXplore
+
+# denormalize constants
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
 warnings.filterwarnings("ignore")
+
+
+def denormalize(t):
+    device = t.device
+    mean = torch.tensor(IMAGENET_MEAN, device=device).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, device=device).view(3, 1, 1)
+    x = t * std + mean
+    x = x.clamp(0, 1)
+    x = x.permute(1, 2, 0).cpu().numpy()  # HWC
+    return x
+
+
+@torch.no_grad()
+def visualize_mask_on_image(model, img_path, device="cuda", save_path="mask_vis.png"):
+    model.eval().to(device)
+
+    pil_img = Image.open(img_path).convert("RGB")
+    transform = transforms.Compose(
+        [
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+    img = transform(pil_img).unsqueeze(0).to(device)  # [1, 3, 512, 512]
+
+    # create dummy mask just ensure the model runs
+    _, _, H, W = img.shape
+    dummy_mask = torch.zeros((1, 1, H, W), device=device)
+    dummy_label = torch.zeros((1,), device=device)
+
+    output = model(img, dummy_mask, dummy_label)
+    pred_mask = output["pred_mask"]  # [1, 1, H, W]
+
+    heatmap = pred_mask[0, 0].cpu().numpy()
+    binary_mask = (heatmap > 0.5).astype(np.uint8)
+
+    # maximum explanation point (highest probability)
+    max_y, max_x = np.unravel_index(np.argmax(heatmap), heatmap.shape)
+
+    img_denorm = denormalize(img[0])
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+    axes[0].imshow(img_denorm)
+    axes[0].scatter([max_x], [max_y], c="red", s=30, label="Max Explanation Point")
+    axes[0].set_title("Max Evidence Point")
+    axes[0].axis("off")
+
+    axes[1].imshow(img_denorm)
+    axes[1].imshow(heatmap, cmap="jet", alpha=0.5)
+    axes[1].set_title("Heatmap Evidence Map")
+    axes[1].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved visualization to {save_path}")
+
 
 # Import Captum
 from captum.attr import (
@@ -181,7 +242,7 @@ class ModelInterpreter:
 
         else:
             # Baseline 模型：保留 logits 的 (B, 1) 形状
-            logits = self.model.model.get_logits(input_tensor)   # [B, 1]
+            logits = self.model.model.get_logits(input_tensor)  # [B, 1]
             return logits
 
     def interpret_gradcam(self, input_tensor, target_class=None):
@@ -388,15 +449,11 @@ def evaluate_model(
         print(f"  Generating SHAP for sample {len(images_data)+1}...")
         shap_attr = interpreter.interpret_shap(input_tensor, n_samples=25)
 
-        print(
-            f"  Generating Integrated Gradients for sample {len(images_data)+1}..."
-        )
+        print(f"  Generating Integrated Gradients for sample {len(images_data)+1}...")
         ig_attr = interpreter.interpret_integrated_gradients(input_tensor)
 
         # Process for visualization
-        original_img = (
-            denormalize_image(input_tensor[0]).permute(1, 2, 0).cpu().numpy()
-        )
+        original_img = denormalize_image(input_tensor[0]).permute(1, 2, 0).cpu().numpy()
         gradcam_vis = process_attributions(gradcam_attr, input_tensor)
         shap_vis = process_attributions(shap_attr, input_tensor)
         ig_vis = process_attributions(ig_attr, input_tensor)

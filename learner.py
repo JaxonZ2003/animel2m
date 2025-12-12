@@ -1,5 +1,6 @@
 import torch
 import pytorch_lightning as pl
+import numpy as np
 import os
 import argparse
 
@@ -98,6 +99,24 @@ class BaseLitModule(pl.LightningModule):
         labels = torch.cat([x["labels"] for x in outputs]).cpu().numpy()
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
 
+        if np.isnan(preds).any():
+            num_nan = np.isnan(preds).sum()
+            print(
+                f"[WARNING] [{stage}] Found {num_nan} NaN predictions. "
+                f"Will drop them before computing metrics.",
+                flush=True,
+            )
+            valid = ~np.isnan(preds)
+            preds = preds[valid]
+            labels = labels[valid]
+
+            if preds.size == 0:
+                print(
+                    f"[ERROR] [{stage}] No valid predictions left after dropping NaNs. "
+                    f"Skipping metric computation.",
+                    flush=True,
+                )
+                return
         # Baselines output raw logits: we have converted it to probs already
         # AniXplore outputs class probabilities directly
         if self.hparams.is_logits:
@@ -190,7 +209,17 @@ class BaselineLitModule(BaseLitModule):
 
 
 class AniXploreLitModule(BaseLitModule):
-    def __init__(self, seg_pretrain_path, lr=1e-4, max_epochs=10, img_size=224):
+    def __init__(
+        self,
+        seg_pretrain_path,
+        lr=1e-4,
+        max_epochs=10,
+        img_size=224,
+        adv_training=False,
+        adv_eps=4 / 255,
+        adv_alpha=1 / 255,
+        adv_steps=3,
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.hparams.is_logits = True  # AniXplore outputs class probabilities directly
@@ -198,19 +227,67 @@ class AniXploreLitModule(BaseLitModule):
             seg_pretrain_path=seg_pretrain_path, conv_pretrain=True, image_size=img_size
         )
 
-    def _get_dummy_mask(self, images):
-        # if the data has no masks, create dummy masks of all zeros running the AniXplore model
-        return torch.zeros(
-            (images.shape[0], 1, images.shape[2], images.shape[3]), device=self.device
-        )
+        # adversarial training parameters
+        self.adv_training = adv_training
+        self.adv_eps = adv_eps
+        self.adv_alpha = adv_alpha
+        self.adv_steps = adv_steps
+
+    def pgd_attack(self, images, masks, labels):
+        r"""
+        Perform PGD attack on the input images.
+        The masks remain unchanged.
+        """
+        std = torch.tensor([0.229, 0.224, 0.225], device=images.device).view(
+            1, 3, 1, 1
+        )  # imagenet std
+
+        eps_norm = self.adv_eps / std
+        alpha_norm = self.adv_alpha / std
+
+        x_orig = images.detach()
+
+        x_adv = x_orig.clone().detach()
+        # initialize with random noise
+        x_adv = x_adv + torch.zeros_like(x_adv).uniform_(-eps_norm, eps_norm)
+        x_adv = torch.max(torch.min(x_adv, x_orig + eps_norm), x_orig - eps_norm)
+        # ensure within valid pixel range after normalization
+        x_adv = torch.clamp(x_adv, x_orig.min(), x_orig.max())
+        x_adv.requires_grad = True
+
+        for _ in range(self.adv_steps):
+            self.model.zero_grad()
+
+            out_adv = self.model(x_adv, masks, labels)
+            loss_adv = out_adv["backward_loss"]
+
+            # gradients of loss w.r.t. adversarial images
+            loss_adv.backward(retain_graph=False)
+            grad = x_adv.grad.detach()
+
+            x_adv = x_adv + alpha_norm * grad.sign()
+            # maps back to [x_orig - eps, x_orig + eps]
+            x_adv = torch.max(torch.min(x_adv, x_orig + eps_norm), x_orig - eps_norm)
+            # ensure within valid pixel range after normalization
+            x_adv = torch.clamp(x_adv, x_orig.min(), x_orig.max())
+
+            # prepare for next step
+            x_adv = x_adv.detach()
+            x_adv.requires_grad = True
+
+        return x_adv.detach()
 
     def training_step(self, batch, batch_idx):
-        masks = (
-            batch["mask"]
-            if ("mask" in batch and batch["mask"] is not None)
-            else self._get_dummy_mask(batch["image"])
-        )
-        output = self.model(batch["image"], masks, batch["label"])
+        images = batch["image"]
+        masks = batch["mask"].to(self.device)
+        labels = batch["label"]
+
+        if self.adv_training:
+            images_adv = self.pgd_attack(images, masks, labels)
+            output = self.model(images_adv, masks, labels)
+        else:
+            output = self.model(images, masks, labels)
+
         loss = output["backward_loss"]
 
         self.training_step_outputs.append(
@@ -327,6 +404,7 @@ if __name__ == "__main__":
         num_workers=4,
         train_val_split=0.8,
         seed=SEED,
+        with_mask=(args.mode == "anixplore"),
     )
 
     model = (

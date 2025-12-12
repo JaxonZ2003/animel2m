@@ -59,7 +59,26 @@ class FakeImageDataset(Dataset):
 
     def __getitem__(self, idx):
         r = self.records[idx]
-        img = Image.open(r["img_path"]).convert("RGB")
+        p = r["img_path"]
+
+        try:
+            img = Image.open(p).convert("RGB")
+        except Exception as e:
+            H, W = self.img_size, self.img_size
+            img = torch.zeros((3, H, W), dtype=torch.float32)
+            return {
+                "image": img,
+                "label": -1,  # -1 indicates unknown label due to error
+                "task": "invalid",
+                "model_id": -1,  # unknown model
+                "subset": "",
+                "id": None,
+                "mask": torch.zeros((1, H, W), dtype=torch.float32),
+                "mask_label": None,
+                "info_path": None,
+                "img_path": p,
+            }
+
         img = self.t_img(img)
 
         mask = None
@@ -97,7 +116,14 @@ class RealImageDataset(Dataset):
             real_root = real_root / "resized_img"
 
         files = [p for p in real_root.rglob("*") if p.is_file() and is_img(p)]
-        self.paths = files
+        valid_files = []
+        for p in files:
+            try:
+                Image.open(p)
+                valid_files.append(p)
+            except Exception as e:
+                pass
+        self.paths = valid_files
         self.img_size = img_size
         self.t_img = transforms.Compose(
             [
@@ -114,7 +140,25 @@ class RealImageDataset(Dataset):
 
     def __getitem__(self, idx):
         p = self.paths[idx]
-        img = Image.open(p).convert("RGB")
+
+        try:
+            img = Image.open(p).convert("RGB")
+        except Exception as e:
+            H, W = self.img_size, self.img_size
+            img = torch.zeros((3, H, W), dtype=torch.float32)
+            return {
+                "image": img,
+                "label": -1,  # -1 indicates unknown label due to error
+                "task": "invalid",
+                "model_id": -1,  # unknown model
+                "subset": "",
+                "id": None,
+                "mask": torch.zeros((1, H, W), dtype=torch.float32),
+                "mask_label": None,
+                "info_path": None,
+                "img_path": p,
+            }
+
         img = self.t_img(img)
         subset = p.parent.stem
         id_ = p.stem
@@ -154,7 +198,14 @@ class CivitaiFakeDataset(Dataset):
                 )
 
         files = [p for p in civitai_root.rglob("*") if p.is_file() and is_img(p)]
-        self.paths = files
+        valid_files = []
+        for p in files:
+            try:
+                Image.open(p)
+                valid_files.append(p)
+            except Exception as e:
+                pass
+        self.paths = valid_files
         self.img_size = img_size
         self.t_img = transforms.Compose(
             [
@@ -171,7 +222,25 @@ class CivitaiFakeDataset(Dataset):
 
     def __getitem__(self, idx):
         p = self.paths[idx]  # civitai_subset/image/<model_name>/<id>.jpeg
-        img = Image.open(p).convert("RGB")
+
+        try:
+            img = Image.open(p).convert("RGB")
+        except Exception as e:
+            H, W = self.img_size, self.img_size
+            img = torch.zeros((3, H, W), dtype=torch.float32)
+            return {
+                "image": img,
+                "label": -1,  # -1 indicates unknown label due to error
+                "task": "invalid",
+                "model_id": -1,  # unknown model
+                "subset": "",
+                "id": None,
+                "mask": torch.zeros((1, H, W), dtype=torch.float32),
+                "mask_label": None,
+                "info_path": None,
+                "img_path": p,
+            }
+
         img = self.t_img(img)
         model_name = p.parent.stem
         _, H, W = img.shape
@@ -431,6 +500,11 @@ def collapse_for_classification(records):
 
 
 def simple_collate_fn(samples):
+    valid = [s for s in samples if s["label"] != -1]
+    if len(valid) == 0:
+        valid = samples  # all samples are invalid, proceed anyway
+        print(f"[Warning] All samples in the batch are invalid.")
+
     images = torch.stack([s["image"] for s in samples], dim=0)
     labels = torch.tensor([s["label"] for s in samples], dtype=torch.float32)
 
