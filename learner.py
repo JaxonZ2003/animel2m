@@ -243,7 +243,8 @@ class AniXploreLitModule(BaseLitModule):
 
         x_adv = x_orig.clone().detach()
         # initialize with random noise
-        x_adv = x_adv + torch.zeros_like(x_adv).uniform_(-eps_norm, eps_norm)
+        noise = torch.empty_like(x_adv).uniform_(-1.0, 1.0)
+        x_adv = x_adv + noise * eps_norm
         x_adv = torch.max(torch.min(x_adv, x_orig + eps_norm), x_orig - eps_norm)
         # ensure within valid pixel range after normalization
         x_adv = torch.clamp(x_adv, x_orig.min(), x_orig.max())
@@ -377,7 +378,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     base_dir = os.path.join("out", f"seed{SEED}_fold{args.fold}")
-    run_name = args.model_name if args.mode == "baseline" else "anixplore"
+    if args.mode == "anixplore" and args.model_name == "pgd":
+        run_name = "pgdanixplore"
+    else:
+        run_name = args.model_name if args.mode == "baseline" else "anixplore"
     print(f"=== Task Name: {run_name} ===", flush=True)
 
     pl.seed_everything(SEED)
@@ -445,18 +449,19 @@ if __name__ == "__main__":
             min_delta=0.001,
             verbose=True,
         )
-        model = (
-            BaselineLitModule(
+        if args.mode == "baseline":
+            model = BaselineLitModule(
                 model_name=args.model_name, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
             )
-            if args.mode == "baseline"
-            else AniXploreLitModule(
+        else:
+            use_pgd = args.model_name == "pgd"
+            model = AniXploreLitModule(
                 seg_pretrain_path=args.seg_path,
                 max_epochs=EPOCHS,
                 lr=LR,
                 img_size=IMG_SIZE,
+                adv_training=use_pgd,
             )
-        )
 
         trainer = pl.Trainer(
             accelerator="auto",

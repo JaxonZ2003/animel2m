@@ -9,9 +9,15 @@
 #SBATCH -e /gpfs/milgram/scratch60/gerstein/yz2483/logs/animel2m/%x_%A_%a.err
 set -euo pipefail
 
+module load miniconda
+source activate /gpfs/milgram/pi/holmes/yz2483/conda_envs/animel2m
+
+cd /gpfs/milgram/home/yz2483/animel2m
+pwd
+
 SEED=4710
-MODE="baseline"          # "baseline" or "anixplore"
-MODEL_NAME="convnext"   
+MODE="anixplore"          # "baseline" or "anixplore"
+MODEL_NAME="None"   
 FOLDS=("0" "1" "2" "3" "4")
 PYTHON="python"          
 LEARNER="learner.py"    

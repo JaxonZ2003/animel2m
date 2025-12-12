@@ -18,11 +18,11 @@ from learner import BaselineLitModule, AniXploreLitModule
 from models.AniXplore.AniXplore import AniXplore
 
 ALL_MODELS = [
-    "convnext",
+    # "convnext",
     # "resnet",
     # "vit",
-    "frequency",
-    "efficientnet",
+    # "frequency",
+    # "efficientnet",
     # "dualstream",
     # "lightweight",
     "anixplore",
@@ -293,10 +293,27 @@ def generate_all_models_integrated_gradients(
             pred_out = forward_func(img_tensor)
             pred_prob = torch.sigmoid(pred_out).item()
 
-        attr = ig.attribute(img_tensor, baselines=baseline, n_steps=50)
+        # 对 AniXplore 降一点配置，减轻显存压力
+        if model_name == "anixplore":
+            n_steps = 8
+            internal_bs = 1
+        else:
+            n_steps = 20
+            internal_bs = 4
+
+        attr = ig.attribute(
+            img_tensor,
+            baselines=baseline,
+            n_steps=n_steps,
+            internal_batch_size=internal_bs,
+        )
         heat = _attr_to_heatmap(attr, H, W)
 
         results.append((model_name, heat, pred_prob))
+
+        # 这一段是新加的：每个模型跑完主动清一下显存
+        del ig, baseline, attr, lit_model
+        torch.cuda.empty_cache()
 
     if not results:
         print("[ERROR] No model results, nothing to plot.", flush=True)
@@ -365,15 +382,26 @@ def generate_all_models_shap(
             pred_out = forward_func(img_tensor)
             pred_prob = torch.sigmoid(pred_out).item()
 
+        # AniXplore 的 SHAP 最容易炸显存，这里单独减半甚至更多
+        if model_name == "anixplore":
+            this_n_samples = min(8, n_samples)
+        else:
+            this_n_samples = n_samples
+
         attr = gshap.attribute(
             img_tensor,
             baselines=baseline,
-            n_samples=n_samples,
+            n_samples=this_n_samples,
             stdevs=0.0001,
         )
         heat = _attr_to_heatmap(attr, H, W)
 
         results.append((model_name, heat, pred_prob))
+
+        # 主动释放显存
+        del gshap, baseline, attr, lit_model
+        torch.cuda.empty_cache()
+
 
     if not results:
         print("[ERROR] No model results, nothing to plot.")
@@ -459,15 +487,29 @@ def generate_anixplore_mask_and_explanations(
     # IG
     baseline = torch.zeros_like(img_tensor).to(device)
     ig = IntegratedGradients(forward_func)
-    attr_ig = ig.attribute(img_tensor, baselines=baseline, n_steps=50)
+    attr_ig = ig.attribute(
+        img_tensor,
+        baselines=baseline,
+        n_steps=8,              # 步数减小
+        internal_batch_size=1,  # 单样本内部 batch，减显存
+    )
     heat_ig = _attr_to_heatmap(attr_ig, H, W)
+    del ig, attr_ig
+    torch.cuda.empty_cache()
+
 
     # SHAP (GradientShap)
     gshap = GradientShap(forward_func)
     attr_shap = gshap.attribute(
-        img_tensor, baselines=baseline, n_samples=50, stdevs=0.0001
+        img_tensor,
+        baselines=baseline,
+        n_samples=8,         
+        stdevs=0.0001,
     )
     heat_shap = _attr_to_heatmap(attr_shap, H, W)
+    del gshap, attr_shap
+    torch.cuda.empty_cache()
+
 
     # 5. 拼图：原图、mask、GradCAM、IG、SHAP
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
@@ -569,28 +611,28 @@ def visualize_mask_on_image(model, img_path, device="cuda", save_path="mask_vis.
 
 
 def main():
-    img_path = "/home/yz2483/scratch.gerstein/animel2m_dataset/fake_images/0000/text2image/255000/SD_text2image_255000.png"
+    img_path = "/home/yz2483/scratch.gerstein/animel2m_dataset/civitai_subset/image/Illustrious/32950772.jpeg"
 
-    generate_all_models_gradcam(
-        img_path,
-        fold=2,
-        img_size=512,
-        save_path="viz/all_models_gradcam_fold2.png",
-    )
+    # generate_all_models_gradcam(
+    #     img_path,
+    #     fold=2,
+    #     img_size=512,
+    #     save_path="viz/all_models_gradcam_fold2.png",
+    # )
 
-    generate_all_models_integrated_gradients(
-        img_path,
-        fold=2,
-        img_size=512,
-        save_path="viz/all_models_ig_fold2.png",
-    )
+    # generate_all_models_integrated_gradients(
+    #     img_path,
+    #     fold=2,
+    #     img_size=512,
+    #     save_path="viz/all_models_ig_fold2.png",
+    # )
 
-    generate_all_models_shap(
-        img_path,
-        fold=2,
-        img_size=512,
-        save_path="viz/all_models_shap_fold2.png",
-    )
+    # generate_all_models_shap(
+    #     img_path,
+    #     fold=2,
+    #     img_size=512,
+    #     save_path="viz/all_models_shap_fold2.png",
+    # )
 
     generate_anixplore_mask_and_explanations(
         img_path,

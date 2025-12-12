@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J anixplore_exp
+#SBATCH -J anixploreexp2
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=8
@@ -17,8 +17,6 @@ source activate /gpfs/milgram/pi/holmes/yz2483/conda_envs/animel2m
 cd /gpfs/milgram/home/yz2483/animel2m
 pwd
 
-mkdir -p out/checkpoint
-mkdir -p out/logs
 
 FAKE_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/fake_images"
 REAL_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img"
@@ -44,22 +42,22 @@ echo "[Task $TASK_ID] MODEL_IDX=$MODEL_IDX, FOLD=$FOLD"
 
 if [ $MODEL_IDX -eq 0 ]; then
     MODE="anixplore"
-    MODEL_NAME="none" # placeholder, not used in AniXplore mode
+    MODEL_NAME="pgd" # placeholder, not used in AniXplore mode
     echo "[Task $TASK_ID] Running Model: AniXplore, Fold: $FOLD"
 
 elif [ $MODEL_IDX -eq 1 ]; then
     MODE="baseline"
-    MODEL_NAME="convnext"
+    MODEL_NAME="resnet"
     echo "[Task $TASK_ID] Running Baseline: ConvNeXt, Fold: $FOLD"
 
 elif [ $MODEL_IDX -eq 2 ]; then
     MODE="baseline"
-    MODEL_NAME="frequency"
+    MODEL_NAME="vit"
     echo "[Task $TASK_ID] Running Baseline: FrequencyAwareBaseline, Fold: $FOLD"
 
 elif [ $MODEL_IDX -eq 3 ]; then
     MODE="baseline"
-    MODEL_NAME="efficientnet"
+    MODEL_NAME="lightweight"
     echo "[Task $TASK_ID] Running Baseline: EfficientNetBaseline, Fold: $FOLD"
 
 else

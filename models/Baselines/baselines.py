@@ -44,7 +44,6 @@ class BaselineModel(nn.Module):
         raise NotImplementedError
 
 
-# ============== Baseline 1: Simple ConvNeXt Classifier ==============
 class ConvNeXtBaseline(BaselineModel):
     """
     Simple ConvNeXt-based classifier without frequency decomposition or mask prediction.
@@ -75,7 +74,6 @@ class ConvNeXtBaseline(BaselineModel):
         return logits
 
 
-# ============== Baseline 2: ResNet50 Classifier ==============
 class ResNetBaseline(BaselineModel):
     """
     ResNet50-based classifier, a classic baseline for image classification.
@@ -102,7 +100,6 @@ class ResNetBaseline(BaselineModel):
         return logits
 
 
-# ============== Baseline 3: Vision Transformer (ViT) Classifier ==============
 class ViTBaseline(BaselineModel):
     """
     Vision Transformer baseline for comparison with CNN-based approaches.
@@ -137,7 +134,6 @@ class ViTBaseline(BaselineModel):
         return logits
 
 
-# ============== Baseline 4: Frequency-Aware Classifier ==============
 class FrequencyAwareBaseline(BaselineModel):
     """
     A baseline that uses frequency analysis (DCT/DWT) but only for classification.
@@ -211,7 +207,6 @@ class FrequencyAwareBaseline(BaselineModel):
         return logits
 
 
-# ============== Baseline 5: EfficientNet Classifier ==============
 class EfficientNetBaseline(BaselineModel):
     """
     EfficientNet-B0 baseline, known for good accuracy-efficiency trade-off.
@@ -242,65 +237,7 @@ class EfficientNetBaseline(BaselineModel):
         return logits
 
 
-# ============== Baseline 6: Simple Dual-Stream (RGB + Frequency) ==============
-class DualStreamBaseline(BaselineModel):
-    """
-    Simplified dual-stream architecture processing RGB and frequency separately,
-    then fusing for classification. No mask prediction.
-    """
 
-    def __init__(
-        self, backbone="convnext_tiny", pretrained=True, num_classes=1, **kwargs
-    ):
-        super().__init__()
-        from models.AniXplore.dct_extractor import DctFrequencyExtractor
-        from models.AniXplore.dwt_extractor import DwtFrequencyExtractor
-
-        self.dct = DctFrequencyExtractor()
-        self.dwt = DwtFrequencyExtractor()
-
-        # Two separate backbones
-        self.rgb_backbone = timm.create_model(
-            backbone, pretrained=pretrained, num_classes=0
-        )
-        self.freq_backbone = timm.create_model(
-            backbone, pretrained=pretrained, num_classes=0
-        )
-
-        # Get feature dimensions
-        with torch.no_grad():
-            dummy_input = torch.randn(1, 3, 224, 224)
-            feat_dim = self.rgb_backbone(dummy_input).shape[-1]
-
-        # Fusion and classification
-        self.fusion = nn.Sequential(
-            nn.Linear(feat_dim * 2, 512), nn.ReLU(), nn.Dropout(0.3)
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(512, 256), nn.ReLU(), nn.Dropout(0.2), nn.Linear(256, num_classes)
-        )
-
-    def get_logits(self, image):
-        # Extract frequency components
-        high_dct = self.dct.forward_high(image)
-        high_dwt = self.dwt.forward(image)
-        high_freq = high_dct * 0.5 + high_dwt * 0.5
-
-        # Process streams separately
-        rgb_features = self.rgb_backbone(image)
-        freq_features = self.freq_backbone(high_freq)
-
-        # Fuse features
-        fused = torch.cat([rgb_features, freq_features], dim=1)
-        fused = self.fusion(fused)
-
-        # Classify
-        logits = self.classifier(fused)
-        return logits
-
-
-# ============== Baseline 7: Lightweight CNN ==============
 class LightweightCNNBaseline(BaselineModel):
     """
     A very simple and fast CNN baseline for quick experiments.
@@ -361,7 +298,7 @@ def get_baseline_model(model_name, **kwargs):
         "vit": ViTBaseline,
         "frequency": FrequencyAwareBaseline,
         "efficientnet": EfficientNetBaseline,
-        "dualstream": DualStreamBaseline,
+        # "dualstream": DualStreamBaseline,
         "lightweight": LightweightCNNBaseline,
     }
 

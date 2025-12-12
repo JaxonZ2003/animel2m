@@ -1,61 +1,19 @@
 #!/bin/bash
-"""
-Runner script for model interpretation
-This script evaluates all trained models found in the checkpoint directory
-"""
+#SBATCH -J animel2mInterpretation
+#SBATCH -p gpu
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-gpu=4
+#SBATCH --mem=120G
+#SBATCH -t 2-00:00:00
+#SBATCH -o /gpfs/milgram/scratch60/gerstein/yz2483/logs/animel2m/%x_%A_%a.out
+#SBATCH -e /gpfs/milgram/scratch60/gerstein/yz2483/logs/animel2m/%x_%A_%a.err
 
-# Default paths - adjust these according to your setup
-FAKE_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/fake_images"
-REAL_ROOT="/gpfs/milgram/scratch60/gerstein/yz2483/animel2m_dataset/real_images/resized_img"
-CHECKPOINT_DIR="out/checkpoint"
-SAVE_DIR="interpretations"
+set -euo pipefail
 
-# Function to run interpretation for a specific model
-interpret_model() {
-    model=$1
-    echo "========================================"
-    echo "Interpreting model: $model"
-    echo "========================================"
-    
-    python interpret_models.py \
-        --checkpoint_dir "$CHECKPOINT_DIR" \
-        --models "$model" \
-        --fake_root "$FAKE_ROOT" \
-        --real_root "$REAL_ROOT" \
-        --n_samples 8 \
-        --save_dir "$SAVE_DIR" \
-        --img_size 224 \
-        --batch_size 1
-}
+module load miniconda
+source activate /gpfs/milgram/pi/holmes/yz2483/conda_envs/animel2m
 
-# Check if specific model is requested
-if [ "$1" != "" ]; then
-    interpret_model "$1"
-else
-    echo "Running interpretation for all available models..."
-    
-    # Run for all baseline models
-    for model in convnext resnet vit frequency efficientnet dualstream lightweight anixplore; do
-        if [ -d "$CHECKPOINT_DIR/$model" ]; then
-            interpret_model "$model"
-        else
-            echo "Skipping $model - no checkpoint found"
-        fi
-    done
-    
-    echo ""
-    echo "========================================"
-    echo "Creating combined comparison visualization..."
-    echo "========================================"
-    
-    # Run once more to create combined visualization with all models
-    python interpret_models.py \
-        --checkpoint_dir "$CHECKPOINT_DIR" \
-        --fake_root "$FAKE_ROOT" \
-        --real_root "$REAL_ROOT" \
-        --n_samples 8 \
-        --save_dir "$SAVE_DIR" \
-        --img_size 224
-fi
+cd /gpfs/milgram/home/yz2483/animel2m
+pwd
 
-echo "Interpretation complete! Check $SAVE_DIR/ for results."
+python Interpretation.py
