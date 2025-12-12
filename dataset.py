@@ -22,7 +22,7 @@ MODEL_TO_ID = {
     "FLUX1": 2,
     "REAL": 3,
     "Flux.1 S": 4,  # for civitai test set only
-    "Illustraious": 5,  # for civitai test set only
+    "Illustrious": 5,  # for civitai test set only
 }
 
 
