@@ -371,6 +371,15 @@ if __name__ == "__main__":
         default="./segformer_mit-b0.pth",
         help="Path to SegFormer weights",
     )
+    parser.add_argument(
+        "--test_only", action="store_true", help="If set, only run testing"
+    )
+    parser.add_argument(
+        "--ckpt_path",
+        type=str,
+        default=None,
+        help="Checkpoint path to load for test_only mode.",
+    )
 
     args = parser.parse_args()
 
@@ -381,23 +390,6 @@ if __name__ == "__main__":
     pl.seed_everything(SEED)
 
     print_callbacks = PrintEpochResultCallback()
-
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(base_dir, "checkpoint", run_name),
-        filename="{epoch}-{val_auc:.4f}",
-        monitor="val_auc",
-        mode="max",
-        save_top_k=1,
-        save_last=True,
-        verbose=False,
-    )
-    early_stopping = EarlyStopping(
-        monitor="val_auc",
-        mode="max",
-        patience=10,
-        min_delta=0.001,
-        verbose=True,
-    )
 
     logger = CSVLogger(save_dir=os.path.join(base_dir, "logs"), name=run_name)
 
@@ -414,41 +406,92 @@ if __name__ == "__main__":
         with_mask=(args.mode == "anixplore"),
     )
 
-    model = (
-        BaselineLitModule(
-            model_name=args.model_name, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
+    if args.test_only:
+        if args.ckpt_path is None:
+            raise ValueError("Please provide --ckpt_path for test_only mode.")
+
+        if args.mode == "baseline":
+            model = BaselineLitModule.load_from_checkpoint(args.ckpt_path)
+        else:
+            model = AniXploreLitModule.load_from_checkpoint(args.ckpt_path)
+
+        trainer = pl.Trainer(
+            accelerator="auto",
+            devices=1,
+            precision="16-mixed",
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            callbacks=[print_callbacks],
+            logger=logger,
+            num_sanity_val_steps=0,
         )
-        if args.mode == "baseline"
-        else AniXploreLitModule(
-            seg_pretrain_path=args.seg_path, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
+
+        print(
+            f"=== TEST ONLY MODE ===\n"
+            f"Loaded checkpoint: {args.ckpt_path}\n"
+            f"Mode: {args.mode} | Fold: {args.fold}",
+            flush=True,
         )
-    )
+        print("\n=== Start Testing (test_only) ===", flush=True)
+        trainer.test(model, datamodule=dm)
 
-    trainer = pl.Trainer(
-        accelerator="auto",
-        devices=1,
-        max_epochs=EPOCHS,
-        precision="16-mixed",
-        enable_checkpointing=True,
-        enable_progress_bar=False,
-        callbacks=[checkpoint_callback, print_callbacks, early_stopping],
-        logger=logger,
-        num_sanity_val_steps=0,
-    )
+    else:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=os.path.join(base_dir, "checkpoint", run_name),
+            filename="{epoch}-{val_auc:.4f}",
+            monitor="val_auc",
+            mode="max",
+            save_top_k=1,
+            save_last=True,
+            verbose=False,
+        )
+        early_stopping = EarlyStopping(
+            monitor="val_auc",
+            mode="max",
+            patience=10,
+            min_delta=0.001,
+            verbose=True,
+        )
+        model = (
+            BaselineLitModule(
+                model_name=args.model_name, max_epochs=EPOCHS, lr=LR, img_size=IMG_SIZE
+            )
+            if args.mode == "baseline"
+            else AniXploreLitModule(
+                seg_pretrain_path=args.seg_path,
+                max_epochs=EPOCHS,
+                lr=LR,
+                img_size=IMG_SIZE,
+            )
+        )
 
-    print(
-        f"=== Set up complete ===\n"
-        f"Model {args.model_name} | Max Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Learning Rate: {LR}\n"
-        f"{sum(p.numel() for p in model.parameters() if p.requires_grad)} Trainable Parameters.\n"
-        f"Dataset with fold {args.fold} | Seed {SEED}\n"
-        f"Results will be save to {os.path.join(base_dir, 'logs', run_name)}",
-        flush=True,
-    )
+        trainer = pl.Trainer(
+            accelerator="auto",
+            devices=1,
+            max_epochs=EPOCHS,
+            precision="16-mixed",
+            enable_checkpointing=True,
+            enable_progress_bar=False,
+            callbacks=[checkpoint_callback, print_callbacks, early_stopping],
+            logger=logger,
+            num_sanity_val_steps=0,
+        )
 
-    print(f"=== Start Training ===", flush=True)
-    trainer.fit(model, datamodule=dm)
+        print(
+            f"=== Set up complete ===\n"
+            f"Model {args.model_name} | Max Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Learning Rate: {LR}\n"
+            f"{sum(p.numel() for p in model.parameters() if p.requires_grad)} Trainable Parameters.\n"
+            f"Dataset with fold {args.fold} | Seed {SEED}\n"
+            f"Results will be save to {os.path.join(base_dir, 'logs', run_name)}",
+            flush=True,
+        )
 
-    print(f"Best Checkpoint Path: {checkpoint_callback.best_model_path}", flush=True)
+        print(f"=== Start Training ===", flush=True)
+        trainer.fit(model, datamodule=dm)
 
-    print("\n=== Start Testing (using best checkpoint) ===", flush=True)
-    trainer.test(model, datamodule=dm, ckpt_path="best")
+        print(
+            f"Best Checkpoint Path: {checkpoint_callback.best_model_path}", flush=True
+        )
+
+        print("\n=== Start Testing (using best checkpoint) ===", flush=True)
+        trainer.test(model, datamodule=dm, ckpt_path="best")

@@ -20,6 +20,8 @@ MODEL_TO_ID = {
     "SD": 0,
     "SDXL": 1,
     "FLUX1": 2,
+    "Flux": 2,
+    "Flux.1": 2,
     "REAL": 3,
     "Flux.1 S": 4,  # for civitai test set only
     "Illustrious": 5,  # for civitai test set only
@@ -94,7 +96,7 @@ class FakeImageDataset(Dataset):
             "label": 1,  # 1 indicates fake image
             "task": r["task"],  # "inpainting" or "txt2img"
             "model_name": r["model"],
-            "model_id": MODEL_TO_ID[r["model"]],
+            "model_id": MODEL_TO_ID.get(r["model"], -1),
             "subset": r["subset"],  # 0000
             "id": r["id"],  # 000000
             "mask": mask,  # tensor (1, H, W)
@@ -168,7 +170,7 @@ class RealImageDataset(Dataset):
             "image": img,
             "label": 0,  # 0 indicates real image
             "task": "real",
-            "model_id": MODEL_TO_ID["REAL"],
+            "model_id": MODEL_TO_ID.get("REAL", -1),
             "subset": subset,
             "id": id_,
             "mask": mask,
@@ -505,22 +507,22 @@ def simple_collate_fn(samples):
         valid = samples  # all samples are invalid, proceed anyway
         print(f"[Warning] All samples in the batch are invalid.")
 
-    images = torch.stack([s["image"] for s in samples], dim=0)
-    labels = torch.tensor([s["label"] for s in samples], dtype=torch.float32)
+    images = torch.stack([s["image"] for s in valid], dim=0)
+    labels = torch.tensor([s["label"] for s in valid], dtype=torch.float32)
 
     batch = {
         "image": images,
         "label": labels,
-        "task": [s["task"] for s in samples],
+        "task": [s["task"] for s in valid],
         "model_id": torch.tensor(
-            [s.get("model_id", -1) for s in samples], dtype=torch.int64
+            [s.get("model_id", -1) for s in valid], dtype=torch.int64
         ),
-        "subset": [s["subset"] for s in samples],
-        "id": [s["id"] for s in samples],
+        "subset": [s["subset"] for s in valid],
+        "id": [s["id"] for s in valid],
     }
 
     # for AniXplore training with masks
-    if "mask" in samples[0] and samples[0]["mask"] is not None:
-        batch["mask"] = torch.stack([s["mask"] for s in samples], dim=0)
+    if "mask" in valid[0] and valid[0]["mask"] is not None:
+        batch["mask"] = torch.stack([s["mask"] for s in valid], dim=0)
 
     return batch
