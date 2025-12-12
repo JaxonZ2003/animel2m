@@ -59,24 +59,6 @@ class PrintEpochResultCallback(Callback):
             flush=True,
         )
 
-    def on_test_epoch_end(self, trainer, pl_module):
-        metrics = trainer.callback_metrics
-
-        test_loss = metrics.get("test_loss", 0.0)
-        test_acc = metrics.get("test_acc", 0.0)
-        test_auc = metrics.get("test_auc", 0.0)
-
-        test_loss = (
-            test_loss.item() if isinstance(test_loss, torch.Tensor) else test_loss
-        )
-        test_acc = test_acc.item() if isinstance(test_acc, torch.Tensor) else test_acc
-        test_auc = test_auc.item() if isinstance(test_auc, torch.Tensor) else test_auc
-
-        print(
-            f"\n[TEST ] Loss: {test_loss:.4f} | Acc: {test_acc:.4f} | AUC: {test_auc:.4f}\n",
-            flush=True,
-        )
-
 
 class BaseLitModule(pl.LightningModule):
     r"""
@@ -135,6 +117,17 @@ class BaseLitModule(pl.LightningModule):
         self.log(f"{stage}_loss", avg_loss, prog_bar=False, logger=True)
         self.log(f"{stage}_acc", acc, prog_bar=False, logger=True)
         self.log(f"{stage}_auc", auc, prog_bar=False, logger=True)
+
+        if stage == "test":
+            loss_float = (
+                avg_loss.item()
+                if isinstance(avg_loss, torch.Tensor)
+                else float(avg_loss)
+            )
+            print(
+                f"\n[TEST ] Loss: {loss_float:.4f} | Acc: {acc:.4f} | AUC: {auc:.4f}\n",
+                flush=True,
+            )
 
     def on_train_epoch_end(self):
         self._compute_and_log_metrics(self.training_step_outputs, stage="train")
