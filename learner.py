@@ -116,6 +116,7 @@ class BaseLitModule(pl.LightningModule):
                     f"Skipping metric computation.",
                     flush=True,
                 )
+                self.log(f"{stage}_loss", avg_loss, prog_bar=False, logger=True)
                 return
         # Baselines output raw logits: we have converted it to probs already
         # AniXplore outputs class probabilities directly
@@ -300,8 +301,11 @@ class AniXploreLitModule(BaseLitModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        masks = self._get_dummy_mask(batch["image"])
-        output = self.model(batch["image"], masks, batch["label"])
+        images = batch["image"]
+        masks = batch["mask"].to(self.device)
+        labels = batch["label"]
+
+        output = self.model(images, masks, labels)
 
         self.validation_step_outputs.append(
             {
@@ -312,8 +316,11 @@ class AniXploreLitModule(BaseLitModule):
         )
 
     def test_step(self, batch, batch_idx):
-        masks = self._get_dummy_mask(batch["image"])
-        output = self.model(batch["image"], masks, batch["label"])
+        images = batch["image"]
+        masks = batch["mask"].to(self.device)
+        labels = batch["label"]
+
+        output = self.model(images, masks, labels)
 
         self.test_step_outputs.append(
             {
