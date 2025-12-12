@@ -19,12 +19,12 @@ from models.AniXplore.AniXplore import AniXplore
 
 ALL_MODELS = [
     "convnext",
-    "resnet",
-    "vit",
+    # "resnet",
+    # "vit",
     "frequency",
     "efficientnet",
-    "dualstream",
-    "lightweight",
+    # "dualstream",
+    # "lightweight",
     "anixplore",
 ]
 
