@@ -13,13 +13,145 @@ from pathlib import Path
 from tqdm import tqdm
 from torchvision import transforms
 
+from captum.attr import LayerGradCam, IntegratedGradients
+from captum.attr._core.gradient_shap import GradientShap
+from learner import BaselineLitModule, AniXploreLitModule
+
 from models.AniXplore.AniXplore import AniXplore
+
+ALL_MODELS = [
+    "convnext",
+    "resnet",
+    "vit",
+    "frequency",
+    "efficientnet",
+    "dualstream",
+    "lightweight",
+    "anixplore",
+]
 
 # denormalize constants
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 warnings.filterwarnings("ignore")
+
+
+def _find_best_ckpt(model_name, fold=0, seed=4710):
+    ckpt_dir = Path(f"out/seed{seed}_fold{fold}/checkpoint") / model_name
+    if not ckpt_dir.exists():
+        raise ValueError(f"Checkpoint directory not found: {ckpt_dir}")
+
+    ckpts = list(ckpt_dir.glob("epoch=*-val_auc=*.ckpt"))
+    if not ckpts:
+        raise ValueError(f"No checkpoints found in {ckpt_dir}")
+
+    def _get_auc(p):
+        stem = p.stem  # epoch=xx-val_auc=yy.ckpt
+        try:
+            return float(stem.split("val_auc=")[1])
+        except Exception:
+            return -1.0
+
+    best_ckpt = sorted(ckpts, key=_get_auc)[-1]
+    print(f"[INFO] Best ckpt for {model_name} (fold {fold}): {best_ckpt}")
+    return best_ckpt
+
+
+def _load_lit_module(model_name, ckpt_path, device="cuda"):
+    if model_name == "anixplore":
+        lit_model = AniXploreLitModule.load_from_checkpoint(str(ckpt_path))
+    else:
+        lit_model = BaselineLitModule.load_from_checkpoint(str(ckpt_path))
+
+    lit_model.to(device)
+    lit_model.eval()
+    return lit_model
+
+
+def _get_target_layer_for_gradcam(model_name, lit_model):
+    m = lit_model.model
+
+    if model_name == "anixplore":
+        return m.fusion_layers[-1]
+
+    if model_name == "convnext":
+        return m.backbone.stages[-1]
+
+    if model_name == "resnet":
+        return m.backbone.layer4[-1]
+
+    if model_name == "vit":
+        try:
+            return m.backbone.blocks[-1].attn
+        except:
+            print(
+                f"Warning: Could not find attention layer for ViT, GradCAM may not work properly"
+            )
+            return None
+
+    if model_name == "frequency":
+        if hasattr(m.backbone, "stages"):
+            return m.backbone.stages[-1]
+        elif hasattr(m.backbone, "layer4"):
+            return m.backbone.layer4[-1]
+        else:
+            return None
+
+    if model_name == "dualstream":
+        return m.fusion[0]
+
+    if model_name == "lightweight":
+        return m.features[-4]  # Last conv before pooling
+
+
+def _make_forward_func(model_name, lit_model, device="cuda"):
+    m = lit_model.model
+
+    if model_name == "anixplore":
+
+        def forward(x):
+            B, _, H, W = x.shape
+            x = x.to(device)
+            dummy_mask = torch.zeros((B, 1, H, W), device=device)
+            dummy_label = torch.zeros((B,), device=device)
+            out = m(x, dummy_mask, dummy_label)
+            prob = out["pred_prob"].view(B, 1)
+            return prob
+
+        return forward
+
+    else:
+
+        def forward(x):
+            x = x.to(device)
+            logits = m.get_logits(x)  # [B, 1]
+            return logits
+
+        return forward
+
+
+def _attr_to_heatmap(attr_tensor, H, W):
+    if attr_tensor is None:
+        return None
+
+    if attr_tensor.dim() == 4:
+        # [1, C, h, w]
+        if attr_tensor.shape[2:] != (H, W):
+            attr_tensor = F.interpolate(
+                attr_tensor, size=(H, W), mode="bilinear", align_corners=False
+            )
+        attr_tensor = attr_tensor[0]  # [C, H, W]
+
+    if attr_tensor.dim() == 3:
+        # [C, H, W]
+        attr_tensor = attr_tensor.abs().mean(dim=0)  # [H, W]
+
+    heat = attr_tensor.detach().cpu().numpy()
+    if heat.max() > heat.min():
+        heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-8)
+
+    return heat
 
 
 def denormalize(t):
@@ -30,6 +162,33 @@ def denormalize(t):
     x = x.clamp(0, 1)
     x = x.permute(1, 2, 0).cpu().numpy()  # HWC
     return x
+
+
+def _load_and_preprocess_image(img_path, img_size=512, device="cuda"):
+    pil_img = Image.open(img_path).convert("RGB")
+    transform = transforms.Compose(
+        [
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+    img = transform(pil_img).unsqueeze(0).to(device)  # [1, 3, img_size, img_size]
+    img_denorm = denormalize(img[0])
+    return img, img_denorm
+
+
+def generate_all_models_gradcam(
+    img_path,
+    fold=0,
+    seed=4710,
+    img_size=512,
+    device="cuda",
+    save_path="all_models_gradcam.png",
+    model_list=None,
+):
+    if model_list is None:
+        model_list = ALL_MODELS
 
 
 @torch.no_grad()
