@@ -284,7 +284,7 @@ def generate_all_models_integrated_gradients(
             continue
 
         lit_model = _load_lit_module(model_name, ckpt_path, device=device)
-        forward_func = _make_forward_func(model_name, lit_model, img_size, device)
+        forward_func = _make_forward_func(model_name, lit_model, device)
 
         baseline = torch.zeros_like(img_tensor).to(device)
         ig = IntegratedGradients(forward_func)
@@ -356,7 +356,7 @@ def generate_all_models_shap(
             continue
 
         lit_model = _load_lit_module(model_name, ckpt_path, device=device)
-        forward_func = _make_forward_func(model_name, lit_model, img_size, device)
+        forward_func = _make_forward_func(model_name, lit_model, device)
 
         baseline = torch.zeros_like(img_tensor).to(device)
         gshap = GradientShap(forward_func)
@@ -445,7 +445,7 @@ def generate_anixplore_mask_and_explanations(
     max_y, max_x = np.unravel_index(np.argmax(heat_mask), heat_mask.shape)
 
     # 4. AniXplore 的三种 explanation
-    forward_func = _make_forward_func("anixplore", lit_model, img_size, device)
+    forward_func = _make_forward_func("anixplore", lit_model, device)
     target_layer = _get_target_layer_for_gradcam("anixplore", lit_model)
 
     # GradCAM
