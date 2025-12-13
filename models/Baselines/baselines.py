@@ -291,7 +291,6 @@ def get_baseline_model(model_name, **kwargs):
         "vit": ViTBaseline,
         "frequency": FrequencyAwareBaseline,
         "efficientnet": EfficientNetBaseline,
-        # "dualstream": DualStreamBaseline,
         "lightweight": LightweightCNNBaseline,
     }
 

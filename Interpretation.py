@@ -1,14 +1,11 @@
 import torch
-import argparse
 import warnings
-import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
 from pathlib import Path
-from tqdm import tqdm
 from torchvision import transforms
 
 from captum.attr import LayerGradCam, IntegratedGradients
@@ -28,9 +25,15 @@ ALL_MODELS = [
     "anixplore",
 ]
 
-# denormalize constants
+# denormalize constants from ImageNet
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
+
+BG_ALPHA = 0.15  # background transparency: lower means more transparent
+HEAT_ALPHA = 0.85  # heatmap transparency: higher means more opaque
+AX_FACE = (
+    "black"  # background color visible through transparency, black to avoid brightening
+)
 
 warnings.filterwarnings("ignore")
 
@@ -293,7 +296,6 @@ def generate_all_models_integrated_gradients(
             pred_out = forward_func(img_tensor)
             pred_prob = torch.sigmoid(pred_out).item()
 
-        # 对 AniXplore 降一点配置，减轻显存压力
         if model_name == "anixplore":
             n_steps = 8
             internal_bs = 1
@@ -311,7 +313,6 @@ def generate_all_models_integrated_gradients(
 
         results.append((model_name, heat, pred_prob))
 
-        # 这一段是新加的：每个模型跑完主动清一下显存
         del ig, baseline, attr, lit_model
         torch.cuda.empty_cache()
 
@@ -332,9 +333,10 @@ def generate_all_models_integrated_gradients(
         ax_img.set_title(f"{model_name} - Input")
         ax_img.axis("off")
 
-        ax_attr.imshow(img_denorm)
+        ax_attr.set_facecolor(AX_FACE)
+        ax_attr.imshow(img_denorm, alpha=BG_ALPHA)
         if heat is not None:
-            ax_attr.imshow(heat, cmap="RdBu_r", alpha=0.5)
+            ax_attr.imshow(heat, cmap="RdBu_r", alpha=HEAT_ALPHA)
         else:
             ax_attr.text(0.5, 0.5, "N/A", ha="center", va="center")
         ax_attr.set_title(f"{model_name} - Integrated Gradients (Prob: {prob:.3f})")
@@ -382,7 +384,6 @@ def generate_all_models_shap(
             pred_out = forward_func(img_tensor)
             pred_prob = torch.sigmoid(pred_out).item()
 
-        # AniXplore 的 SHAP 最容易炸显存，这里单独减半甚至更多
         if model_name == "anixplore":
             this_n_samples = min(8, n_samples)
         else:
@@ -398,10 +399,8 @@ def generate_all_models_shap(
 
         results.append((model_name, heat, pred_prob))
 
-        # 主动释放显存
         del gshap, baseline, attr, lit_model
         torch.cuda.empty_cache()
-
 
     if not results:
         print("[ERROR] No model results, nothing to plot.")
@@ -420,9 +419,10 @@ def generate_all_models_shap(
         ax_img.set_title(f"{model_name} - Input")
         ax_img.axis("off")
 
-        ax_attr.imshow(img_denorm)
+        ax_attr.set_facecolor(AX_FACE)
+        ax_attr.imshow(img_denorm, alpha=BG_ALPHA)
         if heat is not None:
-            ax_attr.imshow(heat, cmap="RdBu_r", alpha=0.5)
+            ax_attr.imshow(heat, cmap="RdBu_r", alpha=HEAT_ALPHA)
         else:
             ax_attr.text(0.5, 0.5, "N/A", ha="center", va="center")
         ax_attr.set_title(f"{model_name} - SHAP (GradientShap) (Prob: {prob:.3f})")
@@ -445,7 +445,6 @@ def generate_anixplore_mask_and_explanations(
 ):
     device = torch.device(device if torch.cuda.is_available() else "cpu")
 
-    # 1. 加载最佳 anixplore ckpt
     ckpt_path = _find_best_ckpt("anixplore", fold=fold, seed=seed)
     if ckpt_path is None:
         print("[ERROR] No AniXplore checkpoint found.")
@@ -454,14 +453,12 @@ def generate_anixplore_mask_and_explanations(
     lit_model = _load_lit_module("anixplore", ckpt_path, device=device)
     m = lit_model.model
 
-    # 2. 处理图片
     img_tensor, img_denorm = _load_and_preprocess_image(img_path, img_size, device)
     B, _, H, W = img_tensor.shape
 
     dummy_mask = torch.zeros((B, 1, H, W), device=device)
     dummy_label = torch.zeros((B,), device=device)
 
-    # 3. 得到 mask prediction
     with torch.no_grad():
         out = m(img_tensor, dummy_mask, dummy_label)
         pred_mask = out["pred_mask"]  # [1,1,H,W]
@@ -472,7 +469,6 @@ def generate_anixplore_mask_and_explanations(
         heat_mask = (heat_mask - heat_mask.min()) / (heat_mask.max() - heat_mask.min())
     max_y, max_x = np.unravel_index(np.argmax(heat_mask), heat_mask.shape)
 
-    # 4. AniXplore 的三种 explanation
     forward_func = _make_forward_func("anixplore", lit_model, device)
     target_layer = _get_target_layer_for_gradcam("anixplore", lit_model)
 
@@ -490,43 +486,40 @@ def generate_anixplore_mask_and_explanations(
     attr_ig = ig.attribute(
         img_tensor,
         baselines=baseline,
-        n_steps=8,              # 步数减小
+        n_steps=8,  # 步数减小
         internal_batch_size=1,  # 单样本内部 batch，减显存
     )
     heat_ig = _attr_to_heatmap(attr_ig, H, W)
     del ig, attr_ig
     torch.cuda.empty_cache()
 
-
     # SHAP (GradientShap)
     gshap = GradientShap(forward_func)
     attr_shap = gshap.attribute(
         img_tensor,
         baselines=baseline,
-        n_samples=8,         
+        n_samples=8,
         stdevs=0.0001,
     )
     heat_shap = _attr_to_heatmap(attr_shap, H, W)
     del gshap, attr_shap
     torch.cuda.empty_cache()
 
-
-    # 5. 拼图：原图、mask、GradCAM、IG、SHAP
     fig, axes = plt.subplots(2, 3, figsize=(12, 8))
 
-    # (0,0) 原图
+    # original image + AniXplore prediction
     axes[0, 0].imshow(img_denorm)
     axes[0, 0].set_title(f"Input Image\nAniXplore pred={prob:.3f}")
     axes[0, 0].axis("off")
 
-    # (0,1) mask prediction + max evidence point
+    # mask prediction + max evidence point
     axes[0, 1].imshow(img_denorm)
     axes[0, 1].imshow(heat_mask, cmap="jet", alpha=0.5)
     axes[0, 1].scatter([max_x], [max_y], c="red", s=30)
     axes[0, 1].set_title("AniXplore Mask Prediction")
     axes[0, 1].axis("off")
 
-    # (0,2) GradCAM
+    # GradCAM
     axes[0, 2].imshow(img_denorm)
     if heat_gc is not None:
         axes[0, 2].imshow(heat_gc, cmap="jet", alpha=0.5)
@@ -535,25 +528,27 @@ def generate_anixplore_mask_and_explanations(
     axes[0, 2].set_title("AniXplore GradCAM")
     axes[0, 2].axis("off")
 
-    # (1,0) IG
-    axes[1, 0].imshow(img_denorm)
+    # Integrated Gradients
+    axes[1, 0].set_facecolor(AX_FACE)
+    axes[1, 0].imshow(img_denorm, alpha=BG_ALPHA)
     if heat_ig is not None:
-        axes[1, 0].imshow(heat_ig, cmap="RdBu_r", alpha=0.5)
+        axes[1, 0].imshow(heat_ig, cmap="RdBu_r", alpha=HEAT_ALPHA)
     else:
         axes[1, 0].text(0.5, 0.5, "IG N/A", ha="center", va="center")
     axes[1, 0].set_title("AniXplore Integrated Gradients")
     axes[1, 0].axis("off")
 
-    # (1,1) SHAP
-    axes[1, 1].imshow(img_denorm)
+    # SHAP
+    axes[1, 1].set_facecolor(AX_FACE)
+    axes[1, 1].imshow(img_denorm, alpha=BG_ALPHA)
     if heat_shap is not None:
-        axes[1, 1].imshow(heat_shap, cmap="RdBu_r", alpha=0.5)
+        axes[1, 1].imshow(heat_shap, cmap="RdBu_r", alpha=HEAT_ALPHA)
     else:
         axes[1, 1].text(0.5, 0.5, "SHAP N/A", ha="center", va="center")
     axes[1, 1].set_title("AniXplore SHAP (GradientShap)")
     axes[1, 1].axis("off")
 
-    # (1,2) 留空 or 再画一次 mask/其它
+    # empty
     axes[1, 2].axis("off")
 
     plt.tight_layout()

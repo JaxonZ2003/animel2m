@@ -24,6 +24,7 @@ SEG_PATH="./segformer_mit-b0.pth"
 NUM_MODELS=4
 NUM_FOLDS=5
 
+# This script is designed to run 5 different folds of training for 4 different models:
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
 if [ "$TASK_ID" -lt 0 ] || [ "$TASK_ID" -ge $((NUM_MODELS * NUM_FOLDS)) ]; then
@@ -35,10 +36,15 @@ MODEL_IDX=$((TASK_ID / NUM_FOLDS))
 FOLD=$((TASK_ID % NUM_FOLDS))       
 echo "[Task $TASK_ID] MODEL_IDX=$MODEL_IDX, FOLD=$FOLD"
 
+# Assuming 4 gpus are available per user, this script follows the mapping:
 # MODEL_IDX: 0 -> AniXplore
-# MODEL_IDX: 1 -> Baseline: ConvNeXt
-# MODEL_IDX: 2 -> Baseline: ResNet
-# MODEL_IDX: 3 -> Baseline: ViT
+# MODEL_IDX: 1 -> convnext
+# MODEL_IDX: 2 -> efficientnet
+# MODEL_IDX: 3 -> frequency
+
+# MODE can be selected from ["anixplore", "baseline"]
+# MODEL_NAME can be selected from ["convnext", "resnet", "vit", "frequency", "efficientnet", "lightweight"]
+
 
 if [ $MODEL_IDX -eq 0 ]; then
     MODE="anixplore"
