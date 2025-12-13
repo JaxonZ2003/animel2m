@@ -6,19 +6,13 @@ from torchvision import models
 
 
 class BaselineModel(nn.Module):
-    """Base class for all baseline models"""
-
     def forward(self, image, mask=None, label=None, *args, **kwargs):
-        # All baselines ignore mask input
+        # ignore mask input for baseline models
         logits = self.get_logits(image)
 
         output_dict = {
-            "backward_loss": torch.tensor(0.0).to(
-                image.device
-            ),  # Will be computed in training
-            "pred_label": torch.tensor(0.0).to(
-                image.device
-            ),  # Will be computed in training
+            "backward_loss": torch.tensor(0.0).to(image.device),  # placeholder
+            "pred_label": torch.tensor(0.0).to(image.device),  # placeholder
             "raw_logits": logits,
         }
 
@@ -44,6 +38,58 @@ class BaselineModel(nn.Module):
         raise NotImplementedError
 
 
+class LightweightCNNBaseline(BaselineModel):
+    """
+    A simple CNN baseline
+    """
+
+    def __init__(self, num_classes=1, **kwargs):
+        super().__init__()
+        self.features = nn.Sequential(
+            # Block 1
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            # Block 2
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            # Block 3
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            # Global pooling
+            nn.AdaptiveAvgPool2d(1),
+        )
+
+        # MLP Classifier
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes),
+        )
+
+    def get_logits(self, image):
+        features = self.features(image)
+        features = features.view(features.size(0), -1)
+        logits = self.classifier(features)
+        return logits
+
+
 class ConvNeXtBaseline(BaselineModel):
     """
     Simple ConvNeXt-based classifier without frequency decomposition or mask prediction.
@@ -55,7 +101,7 @@ class ConvNeXtBaseline(BaselineModel):
         self.backbone = timm.create_model(
             "convnext_tiny", pretrained=pretrained, num_classes=0
         )
-        # Get the feature dimension
+        # get the feature dimension
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, 224, 224)
             feat_dim = self.backbone(dummy_input).shape[-1]
@@ -82,7 +128,7 @@ class ResNetBaseline(BaselineModel):
     def __init__(self, pretrained=True, num_classes=1, **kwargs):
         super().__init__()
         self.backbone = models.resnet50(pretrained=pretrained)
-        # Replace the final FC layer
+        # replace the final fully connected layer
         feat_dim = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()
 
@@ -107,7 +153,7 @@ class ViTBaseline(BaselineModel):
 
     def __init__(self, pretrained=True, num_classes=1, img_size=512, **kwargs):
         super().__init__()
-        # Use ViT-Small for efficiency
+        # use vit_small for efficiency
         self.backbone = timm.create_model(
             "vit_small_patch16_224",
             pretrained=pretrained,
@@ -115,7 +161,7 @@ class ViTBaseline(BaselineModel):
             img_size=img_size,
         )
 
-        # Get the feature dimension
+        # get feature dimension
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, img_size, img_size)
             feat_dim = self.backbone(dummy_input).shape[-1]
@@ -150,10 +196,10 @@ class FrequencyAwareBaseline(BaselineModel):
         self.dct = DctFrequencyExtractor()
         self.dwt = DwtFrequencyExtractor()
 
-        # Create backbone with 6 input channels (RGB + frequency)
+        # create backbone with 6 input channels (RGB + frequency)
         self.backbone = timm.create_model(backbone, pretrained=False, num_classes=0)
 
-        # Modify first conv layer to accept 6 channels
+        # modify first conv layer to accept 6 channels
         if hasattr(self.backbone, "stem"):  # ConvNeXt
             original_conv = self.backbone.stem[0]
             self.backbone.stem[0] = nn.Conv2d(
@@ -165,14 +211,14 @@ class FrequencyAwareBaseline(BaselineModel):
                 bias=False,
             )
             if pretrained:
-                # Initialize with pretrained weights for RGB channels
+                # initialize with pretrained weights for RGB channels
                 with torch.no_grad():
                     self.backbone.stem[0].weight[:, :3] = original_conv.weight
                     self.backbone.stem[0].weight[
                         :, 3:
-                    ] = original_conv.weight  # Duplicate for frequency
+                    ] = original_conv.weight  # duplicate for frequency
 
-        # Get feature dimension
+        # get feature dimension
         with torch.no_grad():
             dummy_input = torch.randn(1, 6, 224, 224)
             feat_dim = self.backbone(dummy_input).shape[-1]
@@ -187,22 +233,22 @@ class FrequencyAwareBaseline(BaselineModel):
         )
 
     def get_logits(self, image):
-        # Extract frequency components
+        # extract frequency components
         high_dct = self.dct.forward_high(image)
         high_dwt = self.dwt.forward(image)
         high_freq = high_dct * 0.5 + high_dwt * 0.5
 
-        # Concatenate with original image
+        # concatenate with original image
         x = torch.cat([image, high_freq], dim=1)
 
-        # Pass through backbone
+        # pass through backbone
         features = self.backbone(x)
 
-        # Handle different output shapes
-        if len(features.shape) == 4:  # Conv output [B, C, H, W]
+        # handle different output shapes
+        if len(features.shape) == 4:  # conv output [B, C, H, W]
             logits = self.classifier(features)
-        else:  # Transformer output [B, D]
-            logits = self.classifier[2:](features)  # Skip pooling and flatten
+        else:  # transformer output [B, D]
+            logits = self.classifier[2:](features)  # skip pooling and flatten
 
         return logits
 
@@ -218,7 +264,7 @@ class EfficientNetBaseline(BaselineModel):
             "efficientnet_b0", pretrained=pretrained, num_classes=0
         )
 
-        # Get the feature dimension
+        # get the feature dimension
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, 224, 224)
             feat_dim = self.backbone(dummy_input).shape[-1]
@@ -233,59 +279,6 @@ class EfficientNetBaseline(BaselineModel):
 
     def get_logits(self, image):
         features = self.backbone(image)
-        logits = self.classifier(features)
-        return logits
-
-
-
-class LightweightCNNBaseline(BaselineModel):
-    """
-    A very simple and fast CNN baseline for quick experiments.
-    Much smaller than other models.
-    """
-
-    def __init__(self, num_classes=1, **kwargs):
-        super().__init__()
-        self.features = nn.Sequential(
-            # Block 1
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            # Block 2
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            # Block 3
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            # Global pooling
-            nn.AdaptiveAvgPool2d(1),
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes),
-        )
-
-    def get_logits(self, image):
-        features = self.features(image)
-        features = features.view(features.size(0), -1)
         logits = self.classifier(features)
         return logits
 
