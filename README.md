@@ -11,3 +11,15 @@ Note that the `preprocess.py` is designed specifically to parse the structures o
 
 Once you have the dataset ready, please install the environments using `env.ym`.
 
+Please modify the variables in shell script of `train.model.sh` to fit the correct data paths on your system.
+
+# Usage
+
+1. Follow the instructions to download the dataset and install the environments.
+2. Modify `FAKE_ROOT` and `REAL_ROOT` to point to the correct dataset paths.
+3. Run the training script on a Yale HPC cluster:
+```bash
+module load miniconda
+conda activate animatedl2m
+sbatch train.model.sh
+```
