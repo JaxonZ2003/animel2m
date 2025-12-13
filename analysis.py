@@ -3,29 +3,31 @@ import glob
 import csv
 import statistics as stats
 
-# 找所有 metrics.csv
 pattern = os.path.join("out", "seed*_fold*", "checkpoint", "*", "metrics.csv")
 files = glob.glob(pattern)
 
-losses, accs, aucs = [], [], []
+by_model = {}
 
 for f in files:
+    model = os.path.basename(os.path.dirname(f))
+    by_model.setdefault(model, {"acc": [], "auc": []})
     with open(f, "r") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
-            losses.append(float(row["loss"]))
-            accs.append(float(row["acc"]))
-            aucs.append(float(row["auc"]))
+            by_model[model]["acc"].append(float(row["acc"]))
+            by_model[model]["auc"].append(float(row["auc"]))
+
 
 def fmt(values):
     mean = stats.mean(values)
-    std = stats.stdev(values)
+    std = stats.stdev(values) if len(values) > 1 else 0.0
     return f"{mean:.4f} ± {std:.4f}"
 
-save_name = "summary.csv"  # 和 out 同一级目录
+
+save_name = "summary.csv"
 with open(save_name, "w", newline="") as fh:
     writer = csv.writer(fh)
     writer.writerow(["metric", "mean±std"])
-    writer.writerow(["loss", fmt(losses)])
-    writer.writerow(["acc", fmt(accs)])
-    writer.writerow(["auc", fmt(aucs)])
+    for model in sorted(by_model.keys()):
+        writer.writerow([f"{model}_acc", fmt(by_model[model]["acc"])])
+        writer.writerow([f"{model}_auc", fmt(by_model[model]["auc"])])
